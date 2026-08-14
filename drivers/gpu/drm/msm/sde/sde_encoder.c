@@ -366,6 +366,9 @@ struct sde_encoder_virt {
 	struct sde_rect cur_conn_roi;
 	struct sde_rect prv_conn_roi;
 	struct drm_crtc *crtc;
+#ifdef VENDOR_EDIT
+	bool recovery_events;
+#endif /*VENDOR_EDIT*/
 
 	bool elevated_ahb_vote;
 };
@@ -2124,6 +2127,7 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 
 	priv = drm_enc->dev->dev_private;
 	sde_enc = to_sde_encoder_virt(drm_enc);
+#ifndef VENDOR_EDIT
 	if (!sde_enc->crtc || (sde_enc->crtc->index
 			>= ARRAY_SIZE(priv->event_thread))) {
 		SDE_DEBUG_ENC(sde_enc,
@@ -2136,7 +2140,23 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 	SDE_EVT32_VERBOSE(DRMID(drm_enc));
 
 	event_thread = &priv->event_thread[sde_enc->crtc->index];
+#else
+	{
+		struct drm_crtc *crtc = sde_enc->crtc;
 
+		if (!crtc || (crtc->index >= ARRAY_SIZE(priv->event_thread))) {
+			SDE_DEBUG_ENC(sde_enc,
+					"invalid cached CRTC: %d or crtc index: %d\n",
+					crtc == NULL,
+					crtc ? crtc->index : -EINVAL);
+			return;
+		}
+
+		SDE_EVT32_VERBOSE(DRMID(drm_enc));
+
+		event_thread = &priv->event_thread[crtc->index];
+	}
+#endif /* VENDOR_EDIT */
 	/* Queue input event work to event thread */
 	kthread_queue_work(&event_thread->worker,
 				&sde_enc->input_event_work);
@@ -2524,6 +2544,7 @@ static int sde_encoder_resource_control(struct drm_encoder *drm_enc,
 		mutex_unlock(&sde_enc->rc_lock);
 		break;
 	case SDE_ENC_RC_EVENT_EARLY_WAKEUP:
+#ifndef VENDOR_EDIT
 		if (!sde_enc->crtc ||
 			sde_enc->crtc->index >= ARRAY_SIZE(priv->disp_thread)) {
 			SDE_DEBUG_ENC(sde_enc,
@@ -2535,7 +2556,22 @@ static int sde_encoder_resource_control(struct drm_encoder *drm_enc,
 		}
 
 		disp_thread = &priv->disp_thread[sde_enc->crtc->index];
+#else
+		{
+			struct drm_crtc *crtc = sde_enc->crtc;
 
+			if (!crtc || crtc->index >= ARRAY_SIZE(priv->disp_thread)) {
+				SDE_DEBUG_ENC(sde_enc,
+						"invalid crtc:%d or crtc index:%d , sw_event:%u\n",
+						crtc == NULL,
+						crtc ? crtc->index : -EINVAL,
+						sw_event);
+				return -EINVAL;
+			}
+
+			disp_thread = &priv->disp_thread[crtc->index];
+		}
+#endif /* VENDOR_EDIT */
 		mutex_lock(&sde_enc->rc_lock);
 
 		if (sde_enc->rc_state == SDE_ENC_RC_STATE_ON) {
@@ -3830,7 +3866,40 @@ void sde_encoder_trigger_kickoff_pending(struct drm_encoder *drm_enc)
 		}
 	}
 }
+#ifdef VENDOR_EDIT
+//add for avoiding flicker in DC light case
+extern int oppo_dimlayer_dither_threshold;
+extern int oppo_dimlayer_dither_bitdepth;
+extern int oppo_get_panel_brightness_to_alpha(void);
+extern bool sde_crtc_get_dimlayer_mode(struct drm_crtc_state *crtc_state);
+static int
+_sde_encoder_setup_dither_for_onscreenfingerprint(struct sde_encoder_phys *phys,
+                                                  void *dither_cfg, int len, struct sde_hw_pingpong *hw_pp)
+{
+        struct drm_encoder *drm_enc = phys->parent;
+        struct drm_msm_dither dither;
 
+        if (!drm_enc || !drm_enc->crtc)
+                return -EFAULT;
+
+        if (!sde_crtc_get_dimlayer_mode(drm_enc->crtc->state))
+                return -EINVAL;
+
+        if (oppo_get_panel_brightness_to_alpha() <= oppo_dimlayer_dither_threshold)
+                return -EINVAL;
+
+        memcpy(&dither, dither_cfg, len);/* Let it be memcpy as QCom may change its structure */
+        dither.c0_bitdepth = 6;
+        dither.c1_bitdepth = 8;
+        dither.c2_bitdepth = 8;
+        dither.c3_bitdepth = 8;
+        dither.temporal_en = 1;
+
+        phys->hw_pp->ops.setup_dither(hw_pp, &dither, len);
+
+        return 0;
+}
+#endif /* VENDOR_EDIT */
 static void _sde_encoder_setup_dither(struct sde_encoder_phys *phys)
 {
 	void *dither_cfg;
@@ -3876,12 +3945,19 @@ static void _sde_encoder_setup_dither(struct sde_encoder_phys *phys)
 		for (i = 0; i < MAX_CHANNELS_PER_ENC; i++) {
 			hw_pp = sde_enc->hw_pp[i];
 			if (hw_pp) {
-				phys->hw_pp->ops.setup_dither(hw_pp, dither_cfg,
-								len);
+				#ifdef VENDOR_EDIT
+				//add for avoiding flicker in DC light case
+				if (_sde_encoder_setup_dither_for_onscreenfingerprint(phys, dither_cfg, len,hw_pp))
+				#endif /*VENDOR_EDIT */
+					phys->hw_pp->ops.setup_dither(hw_pp, dither_cfg,len);
 			}
 		}
 	} else {
-		phys->hw_pp->ops.setup_dither(phys->hw_pp, dither_cfg, len);
+		#ifdef VENDOR_EDIT
+		//add for avoiding flicker in DC light case
+		if (_sde_encoder_setup_dither_for_onscreenfingerprint(phys, dither_cfg, len,phys->hw_pp))
+		#endif /*VENDOR_EDIT */
+			phys->hw_pp->ops.setup_dither(phys->hw_pp, dither_cfg, len);
 	}
 }
 
@@ -4123,6 +4199,10 @@ int sde_encoder_poll_line_counts(struct drm_encoder *drm_enc)
 	return -ETIMEDOUT;
 }
 
+#ifdef VENDOR_EDIT
+extern int sde_connector_update_backlight(struct drm_connector *conn);
+extern int sde_connector_update_hbm(struct drm_connector *connector);
+#endif /* VENDOR_EDIT */
 int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 		struct sde_encoder_kickoff_params *params)
 {
@@ -4158,6 +4238,13 @@ int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 				sde_enc->cur_master);
 	else
 		ln_cnt1 = -EINVAL;
+
+#ifdef VENDOR_EDIT
+	if (sde_enc->cur_master) {
+		sde_connector_update_backlight(sde_enc->cur_master->connector);
+		sde_connector_update_hbm(sde_enc->cur_master->connector);
+	}
+#endif /* VENDOR_EDIT */
 
 	/* prepare for next kickoff, may include waiting on previous kickoff */
 	SDE_ATRACE_BEGIN("enc_prepare_for_kickoff");
@@ -5421,3 +5508,32 @@ void sde_encoder_phys_destroy_cdm(struct sde_encoder_phys *phys_enc)
 	if (hw_cdm && hw_cdm->ops.disable)
 		hw_cdm->ops.disable(hw_cdm);
 }
+
+#ifdef VENDOR_EDIT
+bool sde_encoder_recovery_events_enabled(struct drm_encoder *encoder)
+{
+	struct sde_encoder_virt *sde_enc;
+
+	if (!encoder) {
+		SDE_ERROR("invalid drm enc\n");
+		return false;
+	}
+
+	sde_enc = to_sde_encoder_virt(encoder);
+	return sde_enc->recovery_events;
+}
+
+void sde_encoder_recovery_events_handler(struct drm_encoder *encoder, bool val)
+{
+	struct sde_encoder_virt *sde_enc;
+
+	if (!encoder) {
+		SDE_ERROR("invalid drm enc\n");
+		return;
+	}
+
+	sde_enc = to_sde_encoder_virt(encoder);
+	sde_enc->recovery_events = val;
+}
+#endif /*VENDOR_EDIT*/
+

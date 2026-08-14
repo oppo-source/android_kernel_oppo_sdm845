@@ -779,3 +779,60 @@ config SPECULATIVE_PAGE_FAULT
 	 detected or because underlying PMD or PTE tables are not yet
 	 allocating, it is failing its processing and a classic page fault
 	 is then tried.
+
+# Support reclaim process
+# inactive pages only
+config PROCESS_RECLAIM_ENHANCE
+	bool "Enable process reclaim enchance"
+	depends on PROCESS_RECLAIM
+	default y
+	help
+	 It allows to reclaim different type pages of the process by
+	 /proc/process_reclaim.
+
+	 (echo inactive_file > /proc/PID/reclaim) reclaims inactive file-backed
+		pages only.
+	 (echo inactive_anon > /proc/PID/reclaim) reclaims inactive anonymous
+		pages only.
+	 (echo inactive > /proc/PID/reclaim) reclaims inactive file-backed and
+		anonymous pages only.
+	 Any other vaule, please reference PROCESS_RECLAIM.
+
+#ifdef VENDOR_EDIT
+source "mm/oplus_healthinfo/Kconfig"
+#endif /*VENDOR_EDIT*/
+
+#ifdef OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY
+config VIRTUAL_RESERVE_MEMORY
+	bool "reserved vma for gpu emergency mmap"
+	default y
+	help
+	 support reserved vma for gpu emergency mmap.
+#endif /* VENDOR_EDIT */
+
+#ifdef VENDOR_EDIT
+config OPPO_MEMLEAK_DETECT
+	string
+	option env="OPPO_MEMLEAK_DETECT"
+#endif
+
+#ifdef VENDOR_EDIT
+config VMALLOC_DEBUG
+	bool "trace vmalloc called information with a stack"
+	default n
+	help
+	  trace vmalloc called information with a stack.
+
+config MEMLEAK_DETECT_THREAD
+	bool "One kernel thread to detect memleak and dump infomation to log""
+	default y if ((OPPO_MEMLEAK_DETECT = "all") || (OPPO_MEMLEAK_DETECT = "thread"))
+	default n if !OPPO_MEMLEAK_DETECT
+	help
+	  a daemon to monitor kernel memory leak.
+
+config DUMP_TASKS_MEM
+	bool "dump all userspace process meminfo"
+	default n
+	help
+	  dump all userspace process meminfo
+#endif

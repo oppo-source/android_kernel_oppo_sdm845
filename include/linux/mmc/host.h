@@ -28,6 +28,13 @@
 
 #define MMC_AUTOSUSPEND_DELAY_MS	3000
 
+#ifdef VENDOR_EDIT
+#define MAX_MMC_STORE_HOST 3
+extern struct mmc_host* mmc_store_host[MAX_MMC_STORE_HOST];
+extern int mmc_scaling_enable(struct mmc_host* host, int value);
+extern bool storage_is_mmc(void);
+#endif
+
 struct mmc_ios {
 	unsigned int	clock;			/* clock rate */
 	unsigned int	old_rate;       /* saved clock rate */
@@ -556,6 +563,10 @@ struct mmc_host {
 
 	struct delayed_work	detect;
 	int			detect_change;	/* card detect flag */
+#ifdef CONFIG_EMMC_SDCARD_OPTIMIZE
+	int detect_change_retry;
+#endif
+
 	struct mmc_slot		slot;
 
 	const struct mmc_bus_ops *bus_ops;	/* current bus driver */
@@ -570,6 +581,10 @@ struct mmc_host {
 	struct task_struct	*sdio_irq_thread;
 	bool			sdio_irq_pending;
 	atomic_t		sdio_irq_thread_abort;
+
+#ifdef VENDOR_EDIT
+        bool                    card_stuck_in_programing_status;
+#endif /* VENDOR_EDIT */
 
 	mmc_pm_flag_t		pm_flags;	/* requested pm features */
 

@@ -869,3 +869,26 @@ wake_up:
 	dcc->discard_wake = 1;
 	wake_up_interruptible_all(&dcc->discard_wait_queue);
 }
+
+#ifdef VENDOR_EDIT
+static inline void wake_up_odiscard(struct f2fs_sb_info *sbi)
+{
+	struct discard_cmd_control *dcc = SM_I(sbi)->dcc_info;
+
+	//printk("my debug %s %d:wake_up_interruptible_all\n", __func__, __LINE__);
+	dcc->odiscard_wake = 1;
+	sbi->odiscard_already_run = 1;
+	sbi->last_wp_odc_jiffies = jiffies;
+	wake_up_interruptible_all(&dcc->discard_wait_queue);
+}
+
+static inline void wake_up_otrim(struct f2fs_sb_info *sbi)
+{
+	struct discard_cmd_control *dcc = SM_I(sbi)->dcc_info;
+
+	dcc->otrim_wake = 1;
+	wake_up_interruptible_all(&dcc->discard_wait_queue);
+}
+
+#endif
+

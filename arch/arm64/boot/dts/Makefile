@@ -1,25 +1,30 @@
-dts-dirs += al
-dts-dirs += altera
-dts-dirs += amd
-dts-dirs += amlogic
-dts-dirs += apm
-dts-dirs += arm
-dts-dirs += broadcom
-dts-dirs += cavium
-dts-dirs += exynos
-dts-dirs += freescale
-dts-dirs += hisilicon
-dts-dirs += marvell
-dts-dirs += mediatek
-dts-dirs += nvidia
-dts-dirs += qcom
-dts-dirs += renesas
-dts-dirs += rockchip
-dts-dirs += socionext
-dts-dirs += sprd
-dts-dirs += xilinx
-dts-dirs += lg
-dts-dirs += zte
+#ifndef VENDOR_EDIT
+#dts-dirs += al
+#dts-dirs += altera
+#dts-dirs += amd
+#dts-dirs += amlogic
+#dts-dirs += apm
+#dts-dirs += arm
+#dts-dirs += broadcom
+#dts-dirs += cavium
+#dts-dirs += exynos
+#dts-dirs += freescale
+#dts-dirs += hisilicon
+#dts-dirs += marvell
+#dts-dirs += mediatek
+#dts-dirs += nvidia
+#dts-dirs += qcom
+#dts-dirs += renesas
+#dts-dirs += rockchip
+#dts-dirs += socionext
+#dts-dirs += sprd
+#dts-dirs += xilinx
+#dts-dirs += lg
+#dts-dirs += zte
+#else
+dts-dirs += 17107
+dts-dirs += 17127
+#endif
 
 subdir-y	:= $(dts-dirs)
 

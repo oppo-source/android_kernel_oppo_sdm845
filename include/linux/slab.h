@@ -272,6 +272,10 @@ static inline const char *__check_heap_object(const void *ptr,
 
 #ifndef CONFIG_SLOB
 extern struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+extern atomic64_t kmalloc_debug_caches[KMALLOC_SHIFT_HIGH + 1];
+extern int kmalloc_debug_enable;
+#endif
 #ifdef CONFIG_ZONE_DMA
 extern struct kmem_cache *kmalloc_dma_caches[KMALLOC_SHIFT_HIGH + 1];
 #endif
@@ -487,6 +491,14 @@ static __always_inline void *kmalloc(size_t size, gfp_t flags)
 			if (!index)
 				return ZERO_SIZE_PTR;
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+			if (unlikely(kmalloc_debug_enable)) {
+				struct kmem_cache *s;
+				s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[index]);
+				if (s)
+					return kmem_cache_alloc_trace(s, flags, size);
+			}
+#endif
 			return kmem_cache_alloc_trace(kmalloc_caches[index],
 					flags, size);
 		}

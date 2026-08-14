@@ -32,6 +32,20 @@
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
 
+#ifdef VENDOR_EDIT
+#include <linux/msm_drm_notify.h>
+#include <linux/notifier.h>
+
+extern int msm_drm_notifier_call_chain(unsigned long val, void *v);
+extern int oppo_dsi_update_seed_mode(void);
+
+extern int lcd_closebl_flag;
+
+extern int lcd_closebl_flag_fp;
+
+extern bool oppo_ffl_trigger_finish;
+#endif
+
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define INT_BASE_10 10
 #define NO_OVERRIDE -1
@@ -139,6 +153,11 @@ void dsi_rect_intersect(const struct dsi_rect *r1,
 	}
 }
 
+#ifdef VENDOR_EDIT
+extern int oppo_start_ffl_thread(void);
+extern void oppo_stop_ffl_thread(void);
+#endif /* VENDOR_EDIT */
+
 int dsi_display_set_backlight(void *display, u32 bl_lvl)
 {
 	struct dsi_display *dsi_display = display;
@@ -158,7 +177,42 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 		goto error;
 	}
 
+	#ifdef VENDOR_EDIT
+	if ((bl_lvl == 0 && panel->bl_config.bl_level != 0) ||
+	    (bl_lvl != 0 && panel->bl_config.bl_level == 0))
+		pr_err("backlight level changed %d -> %d\n",
+		       panel->bl_config.bl_level, bl_lvl);
+
+	if (panel->need_power_on_backlight && panel->type != EXT_BRIDGE) {
+		panel->need_power_on_backlight = false;
+		rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_ON);
+		if (rc) {
+			pr_err("[%s] failed to send DSI_CMD_POST_ON_BACKLIGHT cmds, rc=%d\n",
+			       panel->name, rc);
+			goto error;
+		}
+
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_POST_ON_BACKLIGHT);
+
+		rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_OFF);
+		if (rc) {
+			pr_err("[%s] failed to send DSI_CMD_POST_ON_BACKLIGHT cmds, rc=%d\n",
+			       panel->name, rc);
+			goto error;
+		}
+
+		oppo_start_ffl_thread();
+	}
+	#endif /* VENDOR_EDIT */
+
 	panel->bl_config.bl_level = bl_lvl;
+
+	#ifdef VENDOR_EDIT
+	if (oppo_ffl_trigger_finish == false)
+		goto error;
+	#endif /* VENDOR_EDIT */
 
 	/* scale backlight */
 	bl_scale = panel->bl_config.bl_scale;
@@ -178,6 +232,15 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 		goto error;
 	}
 
+	//#ifdef VENDOR_EDIT
+	if(lcd_closebl_flag) {
+		pr_err("silence reboot we should set backlight to zero\n");
+		bl_temp = 0;
+	} else if (bl_lvl) {
+		lcd_closebl_flag_fp = 0;
+	}
+	//#endif /*VENDOR_EDIT*/
+
 	rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
 	if (rc)
 		pr_err("unable to set backlight\n");
@@ -195,7 +258,11 @@ error:
 	return rc;
 }
 
+#ifndef VENDOR_EDIT
 static int dsi_display_cmd_engine_enable(struct dsi_display *display)
+#else
+int dsi_display_cmd_engine_enable(struct dsi_display *display)
+#endif
 {
 	int rc = 0;
 	int i;
@@ -239,7 +306,11 @@ done:
 	return rc;
 }
 
+#ifndef VENDOR_EDIT
 static int dsi_display_cmd_engine_disable(struct dsi_display *display)
+#else
+int dsi_display_cmd_engine_disable(struct dsi_display *display)
+#endif
 {
 	int rc = 0;
 	int i;
@@ -435,7 +506,11 @@ static bool dsi_display_is_te_based_esd(struct dsi_display *display)
 }
 
 /* Allocate memory for cmd dma tx buffer */
+#ifndef VENDOR_EDIT
 static int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
+#else
+int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
+#endif
 {
 	int rc = 0, cnt = 0;
 	struct dsi_display_ctrl *display_ctrl;
@@ -971,6 +1046,22 @@ static bool dsi_display_get_cont_splash_status(struct dsi_display *display)
 	return true;
 }
 
+//#ifdef VENDOR_EDIT
+/**
+*For kernel space :
+*SDE_MODE_DPMS_ON	0
+*SDE_MODE_DPMS_LP1	1
+*SDE_MODE_DPMS_LP2	2
+*SDE_MODE_DPMS_STANDBY 3
+*SDE_MODE_DPMS_SUSPEND 4
+*SDE_MODE_DPMS_OFF	5
+*
+*For user space:
+*DOZE, 1
+*DOZE_SUSPEND, 2
+*/
+
+#ifndef VENDOR_EDIT
 int dsi_display_set_power(struct drm_connector *connector,
 		int power_mode, void *disp)
 {
@@ -995,6 +1086,52 @@ int dsi_display_set_power(struct drm_connector *connector,
 	}
 	return rc;
 }
+#else /*VENDOR_EDIT*/
+int dsi_display_set_power(struct drm_connector *connector,
+		int power_mode, void *disp)
+{
+	struct dsi_display *display = disp;
+	int rc = 0;
+	struct msm_drm_notifier notifier_data;
+	int blank;
+
+	if (!display || !display->panel) {
+		pr_err("invalid display/panel\n");
+		return -EINVAL;
+	}
+
+	switch (power_mode) {
+	case SDE_MODE_DPMS_LP1:
+		rc = dsi_panel_set_lp1(display->panel);
+		set_oppo_display_scene(OPPO_DISPLAY_AOD_SCENE);
+		break;
+	case SDE_MODE_DPMS_LP2:
+		rc = dsi_panel_set_lp2(display->panel);
+		set_oppo_display_scene(OPPO_DISPLAY_AOD_SCENE);
+		break;
+	case SDE_MODE_DPMS_ON:
+		blank = MSM_DRM_BLANK_UNBLANK;
+		notifier_data.data = &blank;
+		notifier_data.id = 0;
+		msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK,
+					   &notifier_data);
+		if(OPPO_DISPLAY_AOD_SCENE == get_oppo_display_scene()) {
+			rc = dsi_panel_set_nolp(display->panel);
+			set_oppo_display_scene(OPPO_DISPLAY_NORMAL_SCENE);
+		}
+		oppo_dsi_update_seed_mode();
+		set_oppo_display_power_status(OPPO_DISPLAY_POWER_ON);
+		msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
+					    &notifier_data);
+		break;
+	case SDE_MODE_DPMS_OFF:
+		break;
+	default:
+		break;
+	}
+	return rc;
+}
+#endif /*VENDOR_EDIT*/
 
 static ssize_t debugfs_dump_info_read(struct file *file,
 				      char __user *user_buf,
@@ -1210,8 +1347,11 @@ static ssize_t debugfs_esd_trigger_check(struct file *file,
 		rc = -EINVAL;
 		goto error;
 	}
-
+	#ifndef VENDOR_EDIT
 	buf[user_len] = '\0'; /* terminate the string */
+	#else
+	buf[user_len-1] = '\0'; /* terminate the string */
+	#endif
 
 	if (kstrtouint(buf, 10, &esd_trigger)) {
 		rc = -EINVAL;
@@ -1229,7 +1369,10 @@ static ssize_t debugfs_esd_trigger_check(struct file *file,
 		rc = dsi_panel_trigger_esd_attack(display->panel);
 		if (rc) {
 			pr_err("Failed to trigger ESD attack\n");
-			goto error;
+			#ifdef VENDOR_EDIT
+			kfree(buf);
+			#endif
+			return rc;
 		}
 	}
 
@@ -1963,6 +2106,10 @@ error:
 	return rc;
 }
 
+#ifdef VENDOR_EDIT
+extern int oppo_panel_id;
+#endif /* VENDOR_EDIT */
+
 static void dsi_display_parse_cmdline_topology(struct dsi_display *display,
 					unsigned int display_type)
 {
@@ -1980,6 +2127,13 @@ static void dsi_display_parse_cmdline_topology(struct dsi_display *display,
 	else
 		boot_str = dsi_display_secondary;
 
+#ifdef VENDOR_EDIT
+        str = strnstr(boot_str, ":panel", strlen(boot_str));
+        if (str) {
+            sscanf(str, ":panel%ld", &value);
+            oppo_panel_id = value+1;
+        }
+#endif
 	str = strnstr(boot_str, ":config", strlen(boot_str));
 	if (!str)
 		return;
@@ -4533,6 +4687,7 @@ int dsi_display_splash_res_cleanup(struct  dsi_display *display)
 	return rc;
 }
 
+#ifdef VENDOR_EDIT
 static int dsi_display_link_clk_force_update_ctrl(void *handle)
 {
 	int rc = 0;
@@ -4569,6 +4724,7 @@ int dsi_display_clk_ctrl(void *handle,
 
 	return rc;
 }
+#endif /*VENDOR_EDIT*/
 
 static int dsi_display_force_update_dsi_clk(struct dsi_display *display)
 {
@@ -4657,8 +4813,9 @@ static ssize_t sysfs_dynamic_dsi_clk_write(struct device *dev,
 	pr_info("%s: bitrate param value: '%d'\n", __func__, clk_rate);
 
 	mutex_lock(&display->display_lock);
-
+	#ifdef VENDOR_EDIT
 	mutex_lock(&dsi_display_clk_mutex);
+	#endif /*VENDOR_EDIT*/
 	display->cached_clk_rate = clk_rate;
 	rc = dsi_display_update_dsi_bitrate(display, clk_rate);
 	if (!rc) {
@@ -4670,15 +4827,18 @@ static ssize_t sysfs_dynamic_dsi_clk_write(struct device *dev,
 		/*Caching clock failed, so don't go on doing so.*/
 		atomic_set(&display->clkrate_change_pending, 0);
 		display->cached_clk_rate = 0;
-
+		#ifdef VENDOR_EDIT
 		mutex_unlock(&dsi_display_clk_mutex);
+		#endif /*VENDOR_EDIT*/
 		mutex_unlock(&display->display_lock);
 
 		return rc;
 	}
 	atomic_set(&display->clkrate_change_pending, 1);
 
+	#ifdef VENDOR_EDIT
 	mutex_unlock(&dsi_display_clk_mutex);
+	#endif /*VENDOR_EDIT*/
 	mutex_unlock(&display->display_lock);
 
 	return count;
@@ -4761,6 +4921,17 @@ static int dsi_display_bind(struct device *dev,
 		return -EINVAL;
 	}
 	priv = drm->dev_private;
+
+	#ifdef VENDOR_EDIT
+	if(0 != set_oppo_display_vendor(display->name)) {
+		pr_err("maybe send a null point to oppo display manager\n");
+	}
+
+	if(is_silence_reboot()) {
+		lcd_closebl_flag = 1;
+		lcd_closebl_flag_fp = 1;
+	}
+	#endif /*VENDOR_EDIT*/
 
 	mutex_lock(&display->display_lock);
 
@@ -5131,7 +5302,12 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 		if (rc)
 			pr_err("component add failed, rc=%d\n", rc);
 
+		#ifndef VENDOR_EDIT
 		pr_debug("Component_add success: %s\n", display->name);
+		#else
+		pr_err("Component_add success: %s\n", display->name);
+		#endif
+
 		if (!strcmp(display->display_type, "primary"))
 			primary_active_node = pdev->dev.of_node;
 		else
@@ -6646,6 +6822,9 @@ int dsi_display_enable(struct dsi_display *display)
 
 		display->panel->panel_initialized = true;
 		pr_debug("cont splash enabled, display enable not required\n");
+#ifdef VENDOR_EDIT
+		set_oppo_display_power_status(OPPO_DISPLAY_POWER_ON);
+#endif /*VENDOR_EDIT*/
 		return 0;
 	}
 
@@ -6754,6 +6933,11 @@ int dsi_display_pre_disable(struct dsi_display *display)
 
 	mutex_lock(&display->display_lock);
 
+	#ifdef VENDOR_EDIT
+	display->panel->need_power_on_backlight = false;
+	oppo_stop_ffl_thread();
+	#endif /* VENDOR_EDIT */
+
 	/* enable the clk vote for CMD mode panels */
 	if (display->config.panel_mode == DSI_OP_CMD_MODE)
 		dsi_display_clk_ctrl(display->dsi_clk_handle,
@@ -6771,13 +6955,24 @@ int dsi_display_pre_disable(struct dsi_display *display)
 int dsi_display_disable(struct dsi_display *display)
 {
 	int rc = 0;
+#ifdef VENDOR_EDIT
+	int blank;
+	struct msm_drm_notifier notifier_data;
+#endif /*VENDOR_EDIT*/
 
 	if (!display) {
 		pr_err("Invalid params\n");
 		return -EINVAL;
 	}
 
-	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY);
+#ifdef VENDOR_EDIT
+	blank = MSM_DRM_BLANK_POWERDOWN;
+	notifier_data.data = &blank;
+	notifier_data.id = 0;
+	msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK,
+					&notifier_data);
+#endif /*VENDOR_EDIT*/
+
 	mutex_lock(&display->display_lock);
 
 	rc = dsi_display_wake_up(display);
@@ -6807,6 +7002,11 @@ int dsi_display_disable(struct dsi_display *display)
 
 	mutex_unlock(&display->display_lock);
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
+#ifdef VENDOR_EDIT
+	set_oppo_display_scene(OPPO_DISPLAY_NORMAL_SCENE);
+	msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK,
+					&notifier_data);
+#endif /*VENDOR_EDIT*/
 	return rc;
 }
 
@@ -6893,6 +7093,13 @@ int dsi_display_unprepare(struct dsi_display *display)
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
 	return rc;
 }
+
+#ifdef VENDOR_EDIT
+struct dsi_display *get_main_display(void) {
+		return primary_display;
+}
+EXPORT_SYMBOL(get_main_display);
+#endif /*VENDOR_EDIT*/
 
 static int __init dsi_display_register(void)
 {

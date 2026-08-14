@@ -1567,8 +1567,16 @@ static int atomic_set_prop(struct drm_atomic_state *state,
 	struct drm_mode_object *ref;
 	int ret;
 
+#ifndef VENDOR_EDIT
 	if (!drm_property_change_valid_get(prop, prop_value, &ref))
 		return -EINVAL;
+#else
+	if (!drm_property_change_valid_get(prop, prop_value, &ref)) {
+		pr_err("travi drm_property_change_valid_get %s\n", prop->name);
+		dump_stack();
+		return -EINVAL;
+	}
+#endif /*VENDOR_EDIT*/
 
 	switch (obj->type) {
 	case DRM_MODE_OBJECT_CONNECTOR: {
@@ -1614,6 +1622,10 @@ static int atomic_set_prop(struct drm_atomic_state *state,
 		break;
 	}
 	default:
+#ifdef VENDOR_EDIT
+		pr_err("travi default\n");
+		dump_stack();
+#endif /*VENDOR_EDIT*/
 		ret = -EINVAL;
 		break;
 	}
@@ -1977,6 +1989,11 @@ retry:
 
 			ret = atomic_set_prop(state, obj, prop, prop_value);
 			if (ret) {
+#ifdef VENDOR_EDIT
+				pr_err("travi drm_atomic_set_property %s\n" , prop->name);
+				if (ret == -22)
+					dump_stack();
+#endif /*VENDOR_EDIT*/
 				drm_mode_object_unreference(obj);
 				goto out;
 			}
@@ -1995,8 +2012,17 @@ retry:
 
 	ret = prepare_crtc_signaling(dev, state, arg, file_priv, &fence_state,
 				     &num_fences);
+#ifndef VENDOR_EDIT
 	if (ret)
 		goto out;
+#else
+	if (ret) {
+		pr_err("travi prepare_crtc_signaling\n");
+		if (ret == -22)
+			dump_stack();
+		goto out;
+	}
+#endif /*VENDOR_EDIT*/
 
 	if (arg->flags & DRM_MODE_ATOMIC_TEST_ONLY) {
 		/*

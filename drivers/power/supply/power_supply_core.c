@@ -32,6 +32,27 @@ EXPORT_SYMBOL_GPL(power_supply_notifier);
 static struct device_type power_supply_dev_type;
 
 #define POWER_SUPPLY_DEFERRED_REGISTER_TIME	msecs_to_jiffies(10)
+#ifdef VENDOR_EDIT
+/*chaochao.xie BSP.Kernel.Storage, 2019-11-27, add control ext4 fsync, copy from P*/
+extern int sysctl_ext4_fsync_enable;
+extern int ext4_fsync_enable_status;
+
+static void power_supply_update_fsync(struct power_supply *psy)
+{
+	union power_supply_propval ret = {0, };
+	if (psy->desc->type == POWER_SUPPLY_TYPE_BATTERY)
+	{
+		if (power_supply_get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &ret))
+			return;
+		if (ret.intval < 5 && ext4_fsync_enable_status != 0) {
+			ext4_fsync_enable_status = 0;
+		} else if (ret.intval > 5 && ext4_fsync_enable_status != 1) {
+			ext4_fsync_enable_status = 1;
+		}
+	}
+}
+#endif
+
 
 static bool __power_supply_is_supplied_by(struct power_supply *supplier,
 					 struct power_supply *supply)
@@ -94,6 +115,15 @@ static void power_supply_changed_work(struct work_struct *work)
 		class_for_each_device(power_supply_class, NULL, psy,
 				      __power_supply_changed_work);
 		power_supply_update_leds(psy);
+#ifdef VENDOR_EDIT
+/*chaochao.xie BSP.Kernel.Storage, 2019-11-27, add control ext4 fsync*/
+	if(sysctl_ext4_fsync_enable) {
+			power_supply_update_fsync(psy);
+		} else {
+			if(ext4_fsync_enable_status != 0)
+				ext4_fsync_enable_status = 0;
+		}
+#endif /*VENDOR_EDIT*/
 		atomic_notifier_call_chain(&power_supply_notifier,
 				PSY_EVENT_PROP_CHANGED, psy);
 		kobject_uevent(&psy->dev.kobj, KOBJ_CHANGE);
@@ -774,13 +804,14 @@ __power_supply_register(struct device *parent,
 	}
 
 	spin_lock_init(&psy->changed_lock);
-	rc = device_add(dev);
-	if (rc)
-		goto device_add_failed;
+
 
 	rc = device_init_wakeup(dev, ws);
 	if (rc)
 		goto wakeup_init_failed;
+		rc = device_add(dev);
+	if (rc)
+		goto device_add_failed;
 
 	rc = psy_register_thermal(psy);
 	if (rc)
@@ -812,8 +843,8 @@ create_triggers_failed:
 	psy_unregister_thermal(psy);
 register_thermal_failed:
 	device_del(dev);
-wakeup_init_failed:
 device_add_failed:
+wakeup_init_failed:
 check_supplies_failed:
 dev_set_name_failed:
 	put_device(dev);

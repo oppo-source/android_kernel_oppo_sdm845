@@ -2450,6 +2450,10 @@ static void configure_usb_wakeup_interrupt(struct dwc3_msm *mdwc,
 
 static void enable_usb_pdc_interrupt(struct dwc3_msm *mdwc, bool enable)
 {
+#ifdef VENDOR_EDIT
+	dev_info(mdwc->dev, "pdc int: enable[%d], in_d[%d], in_h[%d], lpm_f[%ld], vbus[%d]\n",
+			enable, mdwc->in_device_mode, mdwc->in_host_mode, mdwc->lpm_flags, mdwc->vbus_active);
+#endif
 	if (!enable)
 		goto disable_usb_irq;
 
@@ -4212,6 +4216,8 @@ static void msm_dwc3_perf_vote_work(struct work_struct *w)
 	if (dwc->irq_cnt - last_irq_cnt >= PM_QOS_THRESHOLD)
 		in_perf_mode = true;
 
+	pr_debug("%s: in_perf_mode:%u, interrupts in last sample:%lu\n",
+		 __func__, in_perf_mode, (dwc->irq_cnt - last_irq_cnt));
 	last_irq_cnt = dwc->irq_cnt;
 	msm_dwc3_perf_vote_update(mdwc, in_perf_mode);
 	schedule_delayed_work(&mdwc->perf_vote_work,
@@ -4277,6 +4283,12 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 				atomic_read(&mdwc->dev->power.usage_count));
 			return ret;
 		}
+#ifdef VENDOR_EDIT
+		pr_err("%s: regulator_enable\n",__func__);
+#endif
+#ifdef VENDOR_EDIT
+		msleep(50);
+#endif
 
 		dwc3_set_mode(dwc, DWC3_GCTL_PRTCAP_HOST);
 
@@ -4356,6 +4368,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 			dev_err(mdwc->dev, "unable to disable vbus_reg\n");
 			return ret;
 		}
+#ifdef VENDOR_EDIT
+		pr_err("%s: disable_regulator\n",__func__);
+#endif
 
 		cancel_delayed_work_sync(&mdwc->perf_vote_work);
 		msm_dwc3_perf_vote_update(mdwc, false);
@@ -4574,7 +4589,14 @@ static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned int mA)
 	if (mdwc->max_power == mA || psy_type != POWER_SUPPLY_TYPE_USB)
 		return 0;
 
+#ifdef VENDOR_EDIT
+	dev_info(mdwc->dev, "Avail curr from USB = %u, pre max_power = %u\n", mA, mdwc->max_power);
+	if (mA == 0 || mA == 2) {
+		return 0;
+	}
+#else
 	dev_info(mdwc->dev, "Avail curr from USB = %u\n", mA);
+#endif
 	/* Set max current limit in uA */
 	pval.intval = 1000 * mA;
 
@@ -4606,7 +4628,10 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 	int ret = 0;
 	unsigned long delay = 0;
 	const char *state;
-
+#ifdef VENDOR_EDIT
+/* Yichun.Chen  PSW.BSP.CHG  2019-08-07  for detect CDP */
+	u32 reg; 
+#endif
 	if (mdwc->dwc3)
 		dwc = platform_get_drvdata(mdwc->dwc3);
 
@@ -4668,6 +4693,17 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 				atomic_read(&mdwc->dev->power.usage_count));
 			dwc3_otg_start_peripheral(mdwc, 1);
 			mdwc->drd_state = DRD_STATE_PERIPHERAL;
+			mdwc->drd_state = DRD_STATE_PERIPHERAL;
+#ifdef VENDOR_EDIT
+/* Yichun.Chen	PSW.BSP.CHG  2019-08-07  for detect CDP */
+			if (!dwc->softconnect && get_psy_type(mdwc) == POWER_SUPPLY_TYPE_USB_CDP) { 
+				dbg_event(0xFF, "cdp pullup dp", 0); 
+					reg = dwc3_readl(dwc->regs, DWC3_DCTL); 
+					reg |= DWC3_DCTL_RUN_STOP; 
+					dwc3_writel(dwc->regs, DWC3_DCTL, reg); 
+					break; 
+			}
+#endif
 			work = 1;
 		} else {
 			dwc3_msm_gadget_vbus_draw(mdwc, 0);

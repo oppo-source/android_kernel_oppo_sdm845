@@ -65,6 +65,9 @@ struct sde_encoder_kickoff_params {
 	u32 is_primary;
 	unsigned long affected_displays;
 	u32 num_channels;
+#ifdef VENDOR_EDIT
+	bool recovery_event;
+#endif /*VENDOR_EDIT*/
 };
 
 /**
@@ -272,5 +275,11 @@ void sde_encoder_control_idle_pc(struct drm_encoder *enc, bool enable);
  * @Return:     non zero value if ctl start timeout occurred
  */
 int sde_encoder_get_ctlstart_timeout_state(struct drm_encoder *enc);
+
+#ifdef VENDOR_EDIT
+bool sde_encoder_recovery_events_enabled(struct drm_encoder *encoder);
+
+void sde_encoder_recovery_events_handler(struct drm_encoder *encoder, bool val);
+#endif /*VENDOR_EDIT*/
 
 #endif /* __SDE_ENCODER_H__ */

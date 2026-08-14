@@ -17,10 +17,45 @@
 #include <linux/pm_wakeirq.h>
 #include <linux/types.h>
 #include <trace/events/power.h>
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+#include <linux/rtc.h>
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 #include <linux/irq.h>
 #include <linux/irqdesc.h>
 
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+#include "../../drivers/soc/oplus/owakelock/oplus_wakelock_profiler_qcom.h"
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+#include <linux/proc_fs.h>
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+
 #include "power.h"
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+#define WAKEUP_SOURCE_MODEM 101
+#define WAKEUP_SOURCE_MODEM_IPA 106
+#define WAKEUP_SOURCE_KPDPWR 44
+#define WAKEUP_SOURCE_WIFI_1ST 109
+#define WAKEUP_SOURCE_WIFI_2ND 115
+#define WAKEUP_SOURCE_WIFI_3RD 117
+#define WAKEUP_SOURCE_WIFI_4TH 120
+u64	wakeup_source_count_modem = 0;
+u64 wakeup_source_count_kpdpwr = 0;
+u64 wakeup_source_count_wifi = 0;
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#ifdef CONFIG_FB
+#include <linux/fb.h>
+#include <linux/notifier.h>
+#endif
+#ifdef CONFIG_DRM_MSM
+#include <linux/msm_drm_notify.h>
+#endif
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 
 /*
  * If set, the suspend/hibernate code will abort transitions to a sleep state
@@ -34,12 +69,39 @@ unsigned int pm_wakeup_irq __read_mostly;
 /* If set and the system is suspending, terminate the suspend. */
 static bool pm_abort_suspend __read_mostly;
 
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+//add for modem wake up source
+#define MODEM_WAKEUP_SRC_NUM 3
+#define MODEM_DIAG_WS_INDEX 0
+#define MODEM_IPA_WS_INDEX 1
+#define MODEM_QMI_WS_INDEX 2
+extern u64	wakeup_source_count_modem;
+int modem_wakeup_src_count[MODEM_WAKEUP_SRC_NUM] = { 0 };
+char modem_wakeup_src_string[MODEM_WAKEUP_SRC_NUM][10] =
+		{"DIAG_WS",
+		"IPA_WS",
+		"QMI_WS"};
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+extern u16 modem_wakeup_source;
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
+
+
 /*
  * Combined counters of registered wakeup events and wakeup events in progress.
  * They need to be modified together atomically, so it's better to use one
  * atomic variable to hold them both.
  */
 static atomic_t combined_event_count = ATOMIC_INIT(0);
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+static atomic_t ws_all_release_flag = ATOMIC_INIT(1);
+static ktime_t ws_start_node;
+static ktime_t ws_end_node;
+static ktime_t ws_hold_all_time;
+static ktime_t reset_time;
+static spinlock_t statistics_lock;
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 
 #define IN_PROGRESS_BITS	(sizeof(int) * 4)
 #define MAX_IN_PROGRESS		((1 << IN_PROGRESS_BITS) - 1)
@@ -115,7 +177,7 @@ void wakeup_source_drop(struct wakeup_source *ws)
 {
 	if (!ws)
 		return;
-
+	del_timer_sync(&ws->timer);
 	__pm_relax(ws);
 }
 EXPORT_SYMBOL_GPL(wakeup_source_drop);
@@ -535,6 +597,19 @@ static void wakeup_source_activate(struct wakeup_source *ws)
 	if (WARN_ONCE(wakeup_source_not_registered(ws),
 			"unregistered wakeup source\n"))
 		return;
+	#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+	//wakeup_get_start_hold_time();
+	wakeup_get_start_time();
+	#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+	
+	#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	if(atomic_read(&ws_all_release_flag)) {
+		atomic_set(&ws_all_release_flag, 0);
+		spin_lock(&statistics_lock);
+		ws_start_node = ktime_get();
+		spin_unlock(&statistics_lock);
+	}
+	#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 
 	/*
 	 * active wakeup source should bring the system
@@ -679,8 +754,12 @@ static void wakeup_source_deactivate(struct wakeup_source *ws)
 	trace_wakeup_source_deactivate(ws->name, cec);
 
 	split_counters(&cnt, &inpr);
-	if (!inpr && waitqueue_active(&wakeup_count_wait_queue))
+	if (!inpr && waitqueue_active(&wakeup_count_wait_queue)){
+		#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+		wakeup_get_end_hold_time();
+		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 		wake_up(&wakeup_count_wait_queue);
+	}
 }
 
 /**
@@ -826,8 +905,13 @@ void pm_get_active_wakeup_sources(char *pending_wakeup_source, size_t max)
 			if (!active)
 				len += scnprintf(pending_wakeup_source, max,
 						"Pending Wakeup Sources: ");
+#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
 			len += scnprintf(pending_wakeup_source + len, max - len,
 				"%s ", ws->name);
+#else
+			len += scnprintf(pending_wakeup_source + len, max - len,
+				"%s, %ld, %ld ", ws->name, ws->active_count, ktime_to_ms(ws->total_time));
+#endif
 			active = true;
 		} else if (!active &&
 			   (!last_active_ws ||
@@ -837,11 +921,20 @@ void pm_get_active_wakeup_sources(char *pending_wakeup_source, size_t max)
 		}
 	}
 	if (!active && last_active_ws) {
-		scnprintf(pending_wakeup_source, max,
-				"Last active Wakeup Source: %s",
-				last_active_ws->name);
+		#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+				scnprintf(pending_wakeup_source, max,
+						"Last active Wakeup Source: %s",
+						last_active_ws->name);
+		#else
+				scnprintf(pending_wakeup_source, max,
+						"Last active Wakeup Source: %s, %ld, %ld",
+						last_active_ws->name, last_active_ws->active_count, ktime_to_ms(last_active_ws->total_time));
+		#endif
 	}
 	srcu_read_unlock(&wakeup_srcu, srcuidx);
+	#ifdef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+		pr_info("%s, active: %d, pending: %s for debug\n", __func__, active, pending_wakeup_source);
+	#endif
 }
 EXPORT_SYMBOL_GPL(pm_get_active_wakeup_sources);
 
@@ -850,12 +943,33 @@ void pm_print_active_wakeup_sources(void)
 	struct wakeup_source *ws;
 	int srcuidx, active = 0;
 	struct wakeup_source *last_activity_ws = NULL;
+	#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	//add for modem wake up source
+	int i = 0;
+	#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 
 	srcuidx = srcu_read_lock(&wakeup_srcu);
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
 		if (ws->active) {
-			pr_info("active wakeup source: %s\n", ws->name);
+			#ifdef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+			pr_info("active wakeup source: %s, %ld, %ld\n", ws->name, ws->active_count, ktime_to_ms(ws->total_time));
+			#else
+			pr_debug("active wakeup source: %s\n", ws->name);
+			#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
 			active = 1;
+			#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+			//add for modem wake up source
+			for(i = 0; i < MODEM_WAKEUP_SRC_NUM - 1; i++)
+			{
+				if (strcmp(modem_wakeup_src_string[i], ws->name) == 0)
+				{
+					modem_wakeup_src_count[i]++;
+					if(i == MODEM_IPA_WS_INDEX){
+						wakeup_source_count_modem++;
+					}
+				}
+			}
+			#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 		} else if (!active &&
 			   (!last_activity_ws ||
 			    ktime_to_ns(ws->last_time) >
@@ -863,13 +977,65 @@ void pm_print_active_wakeup_sources(void)
 			last_activity_ws = ws;
 		}
 	}
-
+	#ifndef OPLUS_FEATURE_POWERINFO_RPMH
+	//modify for modem wake up source
+	/*
 	if (!active && last_activity_ws)
 		pr_info("last active wakeup source: %s\n",
 			last_activity_ws->name);
+	*/
+	#else
+	if (!active && last_activity_ws){
+		#ifdef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+		pr_info("last active wakeup source: %s, %ld, %ld\n",
+			last_activity_ws->name, last_activity_ws->active_count, ktime_to_ms(last_activity_ws->total_time));
+		#else
+		pr_debug("last active wakeup source: %s\n",
+			last_activity_ws->name);
+		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
+		for(i = 0; i < MODEM_WAKEUP_SRC_NUM - 1; i++)
+		{
+			if (strcmp(modem_wakeup_src_string[i], last_activity_ws->name) == 0)
+			{
+				modem_wakeup_src_count[i]++;
+				if(i == MODEM_IPA_WS_INDEX){
+					wakeup_source_count_modem++;
+				}
+			}
+		}
+	}
+	#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 	srcu_read_unlock(&wakeup_srcu, srcuidx);
 }
 EXPORT_SYMBOL_GPL(pm_print_active_wakeup_sources);
+
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+void get_ws_listhead(struct list_head **ws)
+{
+	if (ws)
+		*ws = &wakeup_sources;
+}
+
+void wakeup_srcu_read_lock(int *srcuidx)
+{
+	*srcuidx = srcu_read_lock(&wakeup_srcu);
+}
+
+void wakeup_srcu_read_unlock(int srcuidx)
+{
+	srcu_read_unlock(&wakeup_srcu, srcuidx);
+}
+
+bool ws_all_release(void)
+{
+	unsigned int cnt, inpr;
+
+	pr_info("Enter: %s\n", __func__);
+	split_counters(&cnt, &inpr);
+	return (!inpr) ? true : false;
+}
+
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 
 /**
  * pm_wakeup_pending - Check if power transition in progress should be aborted.
@@ -895,7 +1061,12 @@ bool pm_wakeup_pending(void)
 	spin_unlock_irqrestore(&events_lock, flags);
 
 	if (ret) {
+		#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+		pr_debug("PM: Wakeup pending, aborting suspend\n");
+		#else
 		pr_info("PM: Wakeup pending, aborting suspend\n");
+		wakeup_reasons_statics(IRQ_NAME_ABORT, WS_CNT_ABORT);
+		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
 		pm_print_active_wakeup_sources();
 	}
 
@@ -930,6 +1101,31 @@ void pm_system_irq_wakeup(unsigned int irq_number)
 
 			pr_warn("%s: %d triggered %s\n", __func__,
 					irq_number, name);
+			#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+			pr_info("%s: resume caused by irq=%d, name=%s\n", __func__, irq_number, name);
+			wakeup_reasons_statics(name, WS_CNT_POWERKEY|WS_CNT_RTCALARM);
+			#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+			#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+			if((irq_number >= WAKEUP_SOURCE_WIFI_1ST && irq_number <= WAKEUP_SOURCE_WIFI_2ND) || 
+				(irq_number >= WAKEUP_SOURCE_WIFI_3RD && irq_number <= WAKEUP_SOURCE_WIFI_4TH)) {
+				wakeup_source_count_wifi++;
+			}
+			if(irq_number == WAKEUP_SOURCE_MODEM) {
+				wakeup_source_count_modem++;
+				modem_wakeup_src_count[MODEM_QMI_WS_INDEX]++;
+				//Yongyao.Song add end
+			}
+			else if (WAKEUP_SOURCE_MODEM_IPA == irq_number) {
+				wakeup_source_count_modem++;
+				modem_wakeup_src_count[MODEM_IPA_WS_INDEX]++;
+				//modem_wakeup_source = 1;
+				//schedule_work(&wakeup_reason_work);
+			}
+			//Yongyao.Song add end
+			if(irq_number == WAKEUP_SOURCE_KPDPWR) {
+				wakeup_source_count_kpdpwr++;
+			}
+			#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 
 		}
 		pm_wakeup_irq = irq_number;
@@ -1106,19 +1302,314 @@ static int wakeup_sources_stats_open(struct inode *inode, struct file *file)
 	return single_open(file, wakeup_sources_stats_show, NULL);
 }
 
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+static ssize_t watchdog_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+	s32 value;
+	struct timespec ts;
+	struct rtc_time tm;
+
+	if (count == sizeof(s32)) {
+		if (copy_from_user(&value, buf, sizeof(s32)))
+			return -EFAULT;
+	} else if (count <= 11) { /* ASCII perhaps? */
+		char ascii_value[11];
+		unsigned long int ulval;
+		int ret;
+
+		if (copy_from_user(ascii_value, buf, count))
+			return -EFAULT;
+
+		if (count > 10) {
+			if (ascii_value[10] == '\n')
+				ascii_value[10] = '\0';
+			else
+				return -EINVAL;
+		} else {
+			ascii_value[count] = '\0';
+		}
+		ret = kstrtoul(ascii_value, 16, &ulval);
+		if (ret) {
+			pr_debug("%s, 0x%lx, 0x%x\n", ascii_value, ulval, ret);
+			return -EINVAL;
+		}
+		value = (s32)lower_32_bits(ulval);
+	} else {
+		return -EINVAL;
+	}
+
+	getnstimeofday(&ts);
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_warn("!@WatchDog_%d; %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+		value, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
+
+	return count;
+}
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
+
 static const struct file_operations wakeup_sources_stats_fops = {
 	.owner = THIS_MODULE,
 	.open = wakeup_sources_stats_open,
 	.read = seq_read,
 	.llseek = seq_lseek,
 	.release = single_release,
+	#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	.write          = watchdog_write,
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 };
 
 static int __init wakeup_sources_debugfs_init(void)
 {
+#ifndef OPLUS_FEATURE_POWERINFO_RPMH
 	wakeup_sources_stats_dentry = debugfs_create_file("wakeup_sources",
 			S_IRUGO, NULL, NULL, &wakeup_sources_stats_fops);
+#else /* OPLUS_FEATURE_POWERINFO_RPMH */
+	wakeup_sources_stats_dentry = debugfs_create_file("wakeup_sources",
+			S_IRUGO| S_IWUGO, NULL, NULL, &wakeup_sources_stats_fops);
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
+
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+proc_create_data("wakeup_sources", 0444, NULL, &wakeup_sources_stats_fops, NULL);
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 	return 0;
 }
 
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+ktime_t active_max_reset_time;
+static ssize_t active_max_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	int srcuidx;
+	int max_ws_rate;
+	ktime_t cur_ws_total;
+	ktime_t max_ws_time;
+	ktime_t wall_delta;
+	char max_ws_name[40];
+	int buf_offset = 0;
+	unsigned long flags;
+	struct wakeup_source *ws;
+
+	max_ws_name[0]='\0';
+	max_ws_time = ktime_set(0, 0);
+	srcuidx = srcu_read_lock(&wakeup_srcu);
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		spin_lock_irqsave(&ws->lock, flags);
+		cur_ws_total = ws->total_time;
+		if(ws->active) {
+			ktime_t active_time;
+			ktime_t now = ktime_get();
+			active_time = ktime_sub(now, ws->last_time);
+			cur_ws_total = ktime_add(ws->total_time, active_time);
+		}
+		if(ktime_compare(cur_ws_total, ws->total_time_backup) >= 0) {
+			if(ktime_compare(ktime_sub(cur_ws_total, ws->total_time_backup), max_ws_time) > 0) {
+				strncpy(max_ws_name, ws->name, sizeof(max_ws_name)-1);
+				max_ws_time = ktime_sub(cur_ws_total, ws->total_time_backup);
+			}
+		}
+		spin_unlock_irqrestore(&ws->lock, flags);
+	}
+	srcu_read_unlock(&wakeup_srcu, srcuidx);
+
+	wall_delta = ktime_sub(ktime_get(), active_max_reset_time);
+	max_ws_rate = ktime_compare(wall_delta, max_ws_time) >= 0 ? ktime_to_ms(max_ws_time)*100/ktime_to_ms(wall_delta) : 0;
+
+	buf_offset += sprintf(buf + buf_offset, "Name\tTime(mS)\tRate(%%)\n");
+	buf_offset += sprintf(buf + buf_offset, "%s\t%lld\t%d\n", max_ws_name, ktime_to_ms(max_ws_time), max_ws_rate);
+	return buf_offset;
+}
+
+static void active_max_reset(void)
+{
+	int srcuidx;
+	unsigned long flags;
+	ktime_t total_time;
+	struct wakeup_source *ws;
+
+	printk("%s\n", __func__);
+	active_max_reset_time = ktime_get();
+	srcuidx = srcu_read_lock(&wakeup_srcu);
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		spin_lock_irqsave(&ws->lock, flags);
+		total_time = ws->total_time;
+		if(ws->active) {
+			ktime_t active_time;
+			ktime_t now = ktime_get();
+			active_time = ktime_sub(now, ws->last_time);
+			total_time = ktime_add(ws->total_time, active_time);
+		}
+		ws->total_time_backup = total_time;
+		spin_unlock_irqrestore(&ws->lock, flags);
+	}
+	srcu_read_unlock(&wakeup_srcu, srcuidx);
+}
+
+static ssize_t active_max_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	char reset_string[]="reset";
+
+	if(strlen(reset_string) != (count-1))
+		return count;
+
+	if (strncmp(buf, reset_string, strlen(reset_string)) != 0)
+		return count;
+
+	active_max_reset();
+	return count;
+}
+
+
+static void kernel_time_reset(void)
+{
+	ktime_t newest_hold_time;
+
+	printk("%s\n", __func__);
+	if(!ws_all_release()) {
+		ktime_t offset_hold_time;
+		ktime_t now = ktime_get();
+		spin_lock(&statistics_lock);
+		offset_hold_time = ktime_sub(now, ws_start_node);
+		newest_hold_time = ktime_add(ws_hold_all_time, offset_hold_time);
+		spin_unlock(&statistics_lock);
+	}
+	else {
+		spin_lock(&statistics_lock);
+		newest_hold_time = ws_hold_all_time;
+		spin_unlock(&statistics_lock);
+	}
+
+	reset_time = newest_hold_time;
+}
+
+static ssize_t kernel_time_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	char reset_string[]="reset";
+
+	if(strlen(reset_string) != (count-1))
+		return count;
+
+	if (strncmp(buf, reset_string, strlen(reset_string)) != 0)
+		return count;
+
+	kernel_time_reset();
+	return count;
+}
+
+static ssize_t kernel_time_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	int buf_offset = 0;
+	ktime_t newest_hold_time;
+
+	if(!ws_all_release()) {
+		ktime_t offset_hold_time;
+		ktime_t now = ktime_get();
+		spin_lock(&statistics_lock);
+		offset_hold_time = ktime_sub(now, ws_start_node);
+		newest_hold_time = ktime_add(ws_hold_all_time, offset_hold_time);
+	}
+	else {
+		spin_lock(&statistics_lock);
+		newest_hold_time = ws_hold_all_time;
+	}
+	newest_hold_time = ktime_sub(newest_hold_time, reset_time);
+	spin_unlock(&statistics_lock);
+	buf_offset += sprintf(buf + buf_offset, "%lld\n", ktime_to_ms(newest_hold_time));
+	return buf_offset;
+}
+
+static int ws_fb_notify_callback(struct notifier_block *nb, unsigned long val, void *data)
+{
+	struct fb_event *evdata = data;
+	int *blank;
+#ifdef CONFIG_DRM_MSM
+	if(val != MSM_DRM_EARLY_EVENT_BLANK && val != MSM_DRM_EVENT_BLANK)
+#else
+    if (val != FB_EVENT_BLANK && val != FB_EARLY_EVENT_BLANK)
+#endif
+	return 0;
+    if(evdata && evdata->data) {
+        blank = evdata->data;
+        printk(KERN_INFO  "%s, val=%ld, blank=%d\n", __func__,val,*blank);
+        #ifdef CONFIG_DRM_MSM
+        if (*blank == MSM_DRM_BLANK_POWERDOWN) { //suspend
+             if (val == MSM_DRM_EARLY_EVENT_BLANK) {    //early event
+        #else
+        if (*blank == FB_BLANK_POWERDOWN) { //suspend
+            if (val == FB_EARLY_EVENT_BLANK) {    //early event
+        #endif
+                kernel_time_reset();
+			    active_max_reset();
+                printk(KERN_INFO  "%s, POWERDOWN\n", __func__);
+             }
+        }
+        #ifdef CONFIG_DRM_MSM
+        else if (*blank == MSM_DRM_BLANK_UNBLANK) { //resume
+             if (val == MSM_DRM_EVENT_BLANK) {    //event
+        #else
+        else if (*blank == FB_BLANK_UNBLANK) { //resume
+            if (val == FB_EVENT_BLANK) {    //event
+        #endif
+            printk(KERN_INFO  "%s, UNBLANK\n", __func__);
+            }
+        }
+        
+    }
+	return NOTIFY_OK;
+}
+
+static struct notifier_block ws_fb_notify_block = {
+	.notifier_call =  ws_fb_notify_callback,
+};
+
+static struct kobj_attribute active_max = __ATTR_RW(active_max);
+static struct kobj_attribute kernel_time = __ATTR_RW(kernel_time);
+
+static struct attribute *attrs[] = {
+	&active_max.attr,
+	&kernel_time.attr,
+	NULL,
+};
+static struct attribute_group attr_group = {
+	.attrs = attrs,
+};
+
+static struct kobject *wakelock_profiler;
+
+static int __init wakelock_profiler_init(void)
+{
+	int retval;
+
+	spin_lock_init(&statistics_lock);
+	active_max_reset_time = ktime_set(0, 0);
+	wakelock_profiler = kobject_create_and_add("wakelock_profiler", kernel_kobj);
+	if (!wakelock_profiler) {
+		printk(KERN_WARNING "[%s] failed to create a sysfs kobject\n",
+				__func__);
+		return 1;
+	}
+	retval = sysfs_create_group(wakelock_profiler, &attr_group);
+	if (retval) {
+		kobject_put(wakelock_profiler);
+		printk(KERN_WARNING "[%s] failed to create a sysfs group %d\n",
+				__func__, retval);
+	}
+#if defined(CONFIG_DRM_MSM)
+	retval = msm_drm_register_client(&ws_fb_notify_block);
+	if (retval) {
+		printk("%s error: register notifier failed,drm!\n", __func__);
+	}
+#elif defined(CONFIG_FB)
+    retval = fb_register_client(&ws_fb_notify_block);
+	if (retval) {
+		printk("%s error: register notifier failed!\n", __func__);
+	}
+#endif
+
+	return 0;
+}
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
+
 postcore_initcall(wakeup_sources_debugfs_init);
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+postcore_initcall(wakelock_profiler_init);
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */

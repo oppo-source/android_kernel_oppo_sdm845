@@ -26,5 +26,11 @@ int mmc_retune(struct mmc_host *host);
 void mmc_latency_hist_sysfs_init(struct mmc_host *host);
 void mmc_latency_hist_sysfs_exit(struct mmc_host *host);
 
+#ifdef VENDOR_EDIT
+#ifdef CONFIG_MMC_SDHCI
+extern bool sdhci_check_pwr(struct mmc_host *mmc);
+#endif
+#endif
+
 #endif
 

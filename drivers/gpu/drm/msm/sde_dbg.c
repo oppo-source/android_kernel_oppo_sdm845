@@ -2121,6 +2121,11 @@ static void _sde_dump_reg(const char *dump_name, u32 reg_dump_flag,
 	in_log = (reg_dump_flag & SDE_DBG_DUMP_IN_LOG);
 	in_mem = (reg_dump_flag & SDE_DBG_DUMP_IN_MEM);
 
+#ifdef VENDOR_EDIT
+	if (0 == strcmp(dump_name, "dsi0_phy") || 0 == strcmp(dump_name, "dsi0_ctrl"))
+		in_log = in_log | SDE_DBG_DUMP_IN_LOG;
+#endif /*VENDOR_EDIT*/
+
 	pr_debug("%s: reg_dump_flag=%d in_log=%d in_mem=%d\n",
 		dump_name, reg_dump_flag, in_log, in_mem);
 

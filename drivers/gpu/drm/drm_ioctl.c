@@ -750,8 +750,16 @@ long drm_ioctl(struct file *filp,
 
 	if (kdata != stack_kdata)
 		kfree(kdata);
+#ifndef VENDOR_EDIT
 	if (retcode)
 		DRM_DEBUG("ret = %d\n", retcode);
+#else
+	if (retcode) {
+		pr_err("travi ret = %d\n", retcode);
+		if (retcode == -22)
+			dump_stack();
+	}
+#endif /*VENDOR_EDIT*/
 	return retcode;
 }
 EXPORT_SYMBOL(drm_ioctl);

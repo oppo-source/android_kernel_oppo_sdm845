@@ -42,6 +42,35 @@
 
 #include <linux/syscore_ops.h>
 
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+#include "../../drivers/soc/oplus/owakelock/oplus_wakelock_profiler_qcom.h"
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+#include <linux/syscore_ops.h>
+#define WAKEUP_SOURCE_ADSP_102 102
+#define WAKEUP_SOURCE_DSPS_103 103
+#define WAKEUP_SOURCE_MODEM 101
+#define WAKEUP_SOURCE_MODEM_IPA 106
+u64 wakeup_source_count_adsp = 0;
+u64 wakeup_source_count_dsps = 0;
+extern u64 wakeup_source_count_modem;
+extern u64 wakeup_source_count_wifi;
+#define MODEM_WAKEUP_SRC_NUM 3
+#define MODEM_DIAG_WS_INDEX 0
+#define MODEM_IPA_WS_INDEX 1
+#define MODEM_QMI_WS_INDEX 2
+extern int modem_wakeup_src_count[MODEM_WAKEUP_SRC_NUM];
+extern char modem_wakeup_src_string[MODEM_WAKEUP_SRC_NUM][10];
+//Yongyao.Song add end
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+//Add irq of WiFi for SDM710
+static unsigned int wlan_sirq = 0;
+#define WLAN_DATA_IRQ_NAME   "WLAN_CE_2"
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
+
 #include "irq-gic-common.h"
 
 #define MAX_IRQ			1020U	/* Max number of SGI+PPI+SPI */
@@ -711,6 +740,10 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 
 	if (!msm_show_resume_irq_mask)
 		return;
+	
+	#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+	wakeup_reasons_statics(IRQ_NAME_WAKE_SUM, WS_CNT_SUM);
+	#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 
 	for (i = 0; i * 32 < gic->irq_nr; i++) {
 		enabled = readl_relaxed(base + GICD_ICENABLER + i * 4);
@@ -729,8 +762,48 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 			name = "stray irq";
 		else if (desc->action && desc->action->name)
 			name = desc->action->name;
-
+			if(name)
 		pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+		
+		#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+		//Add irq of WiFi for SDM710
+		if (wlan_sirq == 0 && (name != NULL) && strncmp(name, WLAN_DATA_IRQ_NAME, strlen(WLAN_DATA_IRQ_NAME)) == 0) {
+		  wlan_sirq = irq;
+		}
+
+		if (irq == wlan_sirq) {
+			wakeup_reasons_statics(IRQ_NAME_WLAN_IPCC_DATA, WS_CNT_MODEM|WS_CNT_WLAN|WS_CNT_ADSP|WS_CNT_CDSP|WS_CNT_SLPI);
+		}
+		#endif //OPLUS_FEATURE_POWERINFO_RPMH
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+		if(WAKEUP_SOURCE_ADSP_102 == irq) {
+			wakeup_source_count_adsp++;
+		}
+		if(WAKEUP_SOURCE_DSPS_103 == irq) {
+			wakeup_source_count_dsps++;
+		}
+		if ((WAKEUP_SOURCE_MODEM == irq ) || (WAKEUP_SOURCE_MODEM_IPA == irq))
+		{
+			wakeup_reasons_statics(IRQ_NAME_MODEM_QMI, WS_CNT_MODEM|WS_CNT_WLAN|WS_CNT_ADSP|WS_CNT_CDSP|WS_CNT_SLPI);
+			if(WAKEUP_SOURCE_MODEM == irq)
+			{
+				wakeup_reasons_statics(IRQ_NAME_MODEM_QMI, WS_CNT_MODEM);
+				modem_wakeup_src_count[MODEM_QMI_WS_INDEX]++;
+			}else if (WAKEUP_SOURCE_MODEM_IPA == irq) {
+				wakeup_reasons_statics(IRQ_NAME_MODEM_IPA, WS_CNT_MODEM);
+				modem_wakeup_src_count[MODEM_IPA_WS_INDEX]++;
+				//modem_wakeup_source = 1;
+				//schedule_work(&wakeup_reason_work);
+			}
+		}
+		//Yongyao.Song add end
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
+		#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+		do {
+			wakeup_reasons_statics(name, WS_CNT_MODEM|WS_CNT_WLAN|WS_CNT_ADSP|WS_CNT_CDSP|WS_CNT_SLPI);
+		} while(0);
+		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
 	}
 }
 

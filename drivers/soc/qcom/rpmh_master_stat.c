@@ -93,6 +93,10 @@ struct msm_rpmh_profile_unit {
 struct rpmh_master_stats_prv_data {
 	struct kobj_attribute ka;
 	struct kobject *kobj;
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	struct kobj_attribute opluska;
+	struct kobject *opluskobj;
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 };
 
 static struct msm_rpmh_master_stats apss_master_stats;
@@ -100,6 +104,18 @@ static void __iomem *rpmh_unit_base;
 static uint32_t use_alt_unit;
 
 static DEFINE_MUTEX(rpmh_stats_mutex);
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+static DEFINE_MUTEX(oplus_rpmh_stats_mutex);
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+#define MSM_ARCH_TIMER_FREQ 19200000
+static inline u64 get_time_in_msec(u64 counter)
+{
+	do_div(counter, MSM_ARCH_TIMER_FREQ);
+	counter *= MSEC_PER_SEC;
+	return counter;
+}
+#endif /* OPLUS_FEATURE_POWERINFO_RPMH */
 
 static ssize_t msm_rpmh_master_stats_print_data(char *prvbuf, ssize_t length,
 				struct msm_rpmh_master_stats *record,
@@ -126,6 +142,18 @@ static ssize_t msm_rpmh_master_stats_print_data(char *prvbuf, ssize_t length,
 			record->last_entered, record->last_exited,
 			temp_accumulated_duration);
 }
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+static ssize_t oplus_rpmh_master_stats_print_data(char *prvbuf, ssize_t length,
+				struct msm_rpmh_master_stats *record,
+				const char *name)
+{
+	return snprintf(prvbuf, length, "%s:%x:%llx\n",
+			name,record->counts,
+			get_time_in_msec(record->accumulated_duration));
+}
+
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 
 static ssize_t msm_rpmh_master_stats_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
@@ -159,6 +187,40 @@ static ssize_t msm_rpmh_master_stats_show(struct kobject *kobj,
 
 	return length;
 }
+
+
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+static ssize_t oplus_rpmh_master_stats_show(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	ssize_t length;
+	int i = 0;
+	unsigned int size = 0;
+	struct msm_rpmh_master_stats *record = NULL;
+
+	/*
+	 * Read SMEM data written by masters
+	 */
+
+	mutex_lock(&oplus_rpmh_stats_mutex);
+
+	for (i = 0, length = 0; i < ARRAY_SIZE(rpmh_masters); i++) {
+		record = (struct msm_rpmh_master_stats *) smem_get_entry(
+					rpmh_masters[i].smem_id, &size,
+					rpmh_masters[i].pid, 0);
+		if (!IS_ERR_OR_NULL(record) && (PAGE_SIZE - length > 0))
+			length += oplus_rpmh_master_stats_print_data(
+					buf + length, PAGE_SIZE - length,
+					record,
+					rpmh_masters[i].master_name);
+	}
+
+	mutex_unlock(&oplus_rpmh_stats_mutex);
+
+	return length;
+}
+
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 
 static inline void msm_rpmh_apss_master_stats_update(
 				struct msm_rpmh_profile_unit *profile_unit)
@@ -258,6 +320,23 @@ static int msm_rpmh_master_stats_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto fail_iomap;
 	}
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	prvdata->opluskobj = rpmh_master_stats_kobj;
+
+	sysfs_attr_init(&prvdata->opluska.attr);
+	prvdata->opluska.attr.mode = 0444;
+	prvdata->opluska.attr.name = "oplus_rpmh_master_stats";
+	prvdata->opluska.show = oplus_rpmh_master_stats_show;
+	prvdata->opluska.store = NULL;
+
+	ret = sysfs_create_file(prvdata->opluskobj, &prvdata->opluska.attr);
+	if (ret) {
+		pr_err("sysfs_create_file failed\n");
+        sysfs_remove_file(prvdata->opluskobj, &prvdata->opluska.attr);
+		kobject_put(prvdata->opluskobj);
+		return ret;
+	}
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 
 	apss_master_stats.version_id = 0x1;
 	platform_set_drvdata(pdev, prvdata);
@@ -282,6 +361,10 @@ static int msm_rpmh_master_stats_remove(struct platform_device *pdev)
 
 	sysfs_remove_file(prvdata->kobj, &prvdata->ka.attr);
 	kobject_put(prvdata->kobj);
+#ifdef OPLUS_FEATURE_POWERINFO_RPMH
+	sysfs_remove_file(prvdata->opluskobj, &prvdata->opluska.attr);
+	kobject_put(prvdata->opluskobj);
+#endif /*VENDOR_EDIT*/
 	platform_set_drvdata(pdev, NULL);
 	iounmap(rpmh_unit_base);
 	rpmh_unit_base = NULL;

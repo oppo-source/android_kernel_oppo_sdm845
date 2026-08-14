@@ -212,7 +212,11 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 	waiter.up = false;
 
 	for (;;) {
+#ifdef CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE
+		if (signal_pending_state(state, task) || hung_long_and_fatal_signal_pending(task))
+#else
 		if (signal_pending_state(state, task))
+#endif
 			goto interrupted;
 		if (unlikely(timeout <= 0))
 			goto timed_out;

@@ -5,6 +5,8 @@ if HAVE_ARCH_KASAN
 
 config KASAN
 	bool "KASan: runtime memory debugger"
+	# enable kasan with  memleak detect
+	default y if OPPO_MEMLEAK_DETECT = "all"
 	depends on SLUB || (SLAB && !DEBUG_SLAB)
 	select CONSTRUCTORS
 	select STACKDEPOT

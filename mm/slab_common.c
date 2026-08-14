@@ -19,6 +19,10 @@
 #include <asm/tlbflush.h>
 #include <asm/page.h>
 #include <linux/memcontrol.h>
+#if defined(VENDOR_EDIT) && (defined(CONFIG_KMALLOC_DEBUG) || defined(CONFIG_VMALLOC_DEBUG))
+#include <linux/atomic.h>
+#include <linux/vmalloc.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/kmem.h>
@@ -831,6 +835,16 @@ struct kmem_cache *__init create_kmalloc_cache(const char *name, size_t size,
 	return s;
 }
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+atomic64_t kmalloc_debug_caches[KMALLOC_SHIFT_HIGH + 1] = {ATOMIC64_INIT(0)};
+EXPORT_SYMBOL(kmalloc_debug_caches);
+
+int kmalloc_debug_enable = 0;
+EXPORT_SYMBOL(kmalloc_debug_enable);
+
+static DEFINE_MUTEX(debug_mutex);
+#endif
+
 struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
 EXPORT_SYMBOL(kmalloc_caches);
 
@@ -902,6 +916,15 @@ struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
 	if (unlikely((flags & GFP_DMA)))
 		return kmalloc_dma_caches[index];
 
+#endif
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+	if (unlikely(kmalloc_debug_enable)) {
+		struct kmem_cache *s;
+
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[index]);
+		if (unlikely(s))
+			return s;
+	}
 #endif
 	return kmalloc_caches[index];
 }
@@ -980,8 +1003,14 @@ void __init setup_kmalloc_cache_index_table(void)
 
 static void __init new_kmalloc_cache(int idx, unsigned long flags)
 {
+#if defined(CONFIG_OPLUS_FEATURE_SLABTRACE_DEBUG)
+	kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+					kmalloc_info[idx].size, flags|SLAB_STORE_USER);
+
+#else
 	kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
 					kmalloc_info[idx].size, flags);
+#endif
 }
 
 /*
@@ -1028,6 +1057,31 @@ void __init create_kmalloc_caches(unsigned long flags)
 #endif
 }
 #endif /* !CONFIG_SLOB */
+
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+
+struct kmalloc_info_struct {
+	const char *name;
+	int size;
+};
+
+const struct kmalloc_info_struct kmalloc_debug_info[] = {
+	{NULL,				  0}, {"kmalloc-debug-96",             96},
+	{"kmalloc-debug-192",           192}, {"kmalloc-debug-8",               8},
+	{"kmalloc-debug-16",             16}, {"kmalloc-debug-32",             32},
+	{"kmalloc-debug-64",             64}, {"kmalloc-debug-128",           128},
+	{"kmalloc-debug-256",           256}, {"kmalloc-debug-512",           512},
+	{"kmalloc-debug-1024",         1024}, {"kmalloc-debug-2048",         2048},
+	{"kmalloc-debug-4096",         4096}, {"kmalloc-debug-8192",         8192},
+	{"kmalloc-debug-16384",       16384}, {"kmalloc-debug-32768",       32768},
+	{"kmalloc-debug-65536",       65536}, {"kmalloc-debug-131072",     131072},
+	{"kmalloc-debug-262144",     262144}, {"kmalloc-debug-524288",     524288},
+	{"kmalloc-debug-1048576",   1048576}, {"kmalloc-debug-2097152",   2097152},
+	{"kmalloc-debug-4194304",   4194304}, {"kmalloc-debug-8388608",   8388608},
+	{"kmalloc-debug-16777216", 16777216}, {"kmalloc-debug-33554432", 33554432},
+	{"kmalloc-debug-67108864", 67108864}
+};
+#endif
 
 /*
  * To avoid unnecessary overhead, we pass through large allocation requests
@@ -1131,6 +1185,11 @@ static void print_slabinfo_header(struct seq_file *m)
 	seq_puts(m, " : globalstat <listallocs> <maxobjs> <grown> <reaped> <error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow>");
 	seq_puts(m, " : cpustat <allochit> <allocmiss> <freehit> <freemiss>");
 #endif
+#if defined (VENDOR_EDIT) && defined(CONFIG_SLAB_STAT_DEBUG)
+	seq_puts(m, " <obj_size>");
+	seq_puts(m, " <reclaim>");
+#endif
+
 	seq_putc(m, '\n');
 }
 
@@ -1186,8 +1245,15 @@ static void cache_show(struct kmem_cache *s, struct seq_file *m)
 
 	seq_printf(m, " : tunables %4u %4u %4u",
 		   sinfo.limit, sinfo.batchcount, sinfo.shared);
+#if defined (VENDOR_EDIT) && defined(CONFIG_SLAB_STAT_DEBUG)
+	seq_printf(m, " : slabdata %6lu %6lu %6lu %6d %1d",
+			sinfo.active_slabs, sinfo.num_slabs, sinfo.shared_avail,
+			s->object_size,
+			((s->flags & SLAB_RECLAIM_ACCOUNT) == SLAB_RECLAIM_ACCOUNT) ? 1: 0);
+#else
 	seq_printf(m, " : slabdata %6lu %6lu %6lu",
 		   sinfo.active_slabs, sinfo.num_slabs, sinfo.shared_avail);
+#endif
 	slabinfo_show_stats(m, s);
 	seq_putc(m, '\n');
 }
@@ -1214,6 +1280,54 @@ int memcg_slab_show(struct seq_file *m, void *p)
 	if (!is_root_cache(s) && s->memcg_params.memcg == memcg)
 		cache_show(s, m);
 	return 0;
+}
+#endif
+
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+int create_kmalloc_debug_caches(size_t size, unsigned long flags)
+{
+	unsigned int index = kmalloc_index(size);
+	struct kmem_cache *s;
+	int ret = 0;
+
+	if ((!index) || (index < KMALLOC_SHIFT_LOW) ||
+			(index > KMALLOC_SHIFT_HIGH)) {
+		pr_warn("kmalloc debug cache create failed size %lu index %d\n",
+				size, index);
+		return -EINVAL;
+	}
+
+	s = kmalloc_caches[index];
+	if (!s) {
+		pr_warn("kmalloc-%lu slab is NULL, do not create debug one\n",
+				size);
+		return -EINVAL;
+	}
+
+	if (s->flags & SLAB_STORE_USER) {
+		pr_warn("%s slab is enable SLAB_STORE_USER, do not "\
+			"create a new debug slab and size %lu.\n",
+			s->name, size);
+		return -EEXIST;
+	}
+
+	mutex_lock(&debug_mutex);
+	s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[index]);
+	if (s) {
+		pr_warn("slab %s has been created, addr is %p, size %lu.\n",
+				kmalloc_debug_info[index].name, s, size);
+		mutex_unlock(&debug_mutex);
+		return -EEXIST;
+	}
+
+	s = kmem_cache_create(kmalloc_debug_info[index].name,
+			kmalloc_debug_info[index].size, 64, flags, NULL);
+	if (s)
+		atomic64_set(&kmalloc_debug_caches[index], (unsigned long)s);
+	else
+		ret = -ENOMEM;
+	mutex_unlock(&debug_mutex);
+	return ret;
 }
 #endif
 
@@ -1249,6 +1363,499 @@ static const struct file_operations proc_slabinfo_operations = {
 	.llseek		= seq_lseek,
 	.release	= seq_release,
 };
+
+#if defined(VENDOR_EDIT) && defined(CONFIG_KMALLOC_DEBUG)
+#define KMALLOC_DEBUG_R_LEN 1024
+
+static ssize_t kmalloc_debug_create_read(struct file *file,
+			char __user *buffer, size_t count, loff_t *off)
+{
+	char *kbuf;
+	struct kmem_cache *s;
+	int i;
+	int len = 0;
+
+	kbuf = kmalloc(KMALLOC_DEBUG_R_LEN, GFP_KERNEL);
+	if (!kbuf) {
+		pr_warn("[kmalloc_debug] %s allo kbuf failed.\n", __func__);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[i]);
+		if (s)
+			len += scnprintf(kbuf+len, KMALLOC_DEBUG_R_LEN - len - 1,
+					"%s\n", s->name);
+	}
+
+	for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+		s = kmalloc_caches[i];
+		if (s && (s->flags & SLAB_STORE_USER))
+			len += scnprintf(kbuf+len, KMALLOC_DEBUG_R_LEN - len - 1,
+					"%s\n", s->name);
+	}
+
+	if ((len > 0) && (kbuf[len - 1] != '\n'))
+		kbuf[len++] = '\n';
+
+	if (len > *off)
+		len -= *off;
+	else
+		len = 0;
+
+	if (copy_to_user(buffer, kbuf, (len < count ? len : count))) {
+		kfree(kbuf);
+		return -EFAULT;
+	}
+	kfree(kbuf);
+
+	*off += (len < count ? len : count);
+	return (len < count ? len : count);
+}
+
+static ssize_t kmalloc_debug_create_write(struct file *file, const char __user *buff,
+		size_t len, loff_t *ppos)
+{
+	char kbuf[64] = {'0'};
+	long size;
+	int ret;
+
+	if (!kmalloc_debug_enable)
+		return -EPERM;
+
+	if (len > 63)
+		len = 63;
+
+	if (copy_from_user(&kbuf, buff, len))
+		return -EFAULT;
+	kbuf[len] = '\0';
+
+	ret = kstrtol(kbuf, 10, &size);
+	if (ret)
+		return -EINVAL;
+
+	ret = create_kmalloc_debug_caches((size_t)size, SLAB_STORE_USER);
+	if (ret)
+		return ret;
+	return len;
+}
+
+static const struct file_operations kmalloc_debug_create_operations = {
+	.read		= kmalloc_debug_create_read,
+	.write          = kmalloc_debug_create_write,
+};
+#endif
+
+#if defined(VENDOR_EDIT) && (defined(CONFIG_KMALLOC_DEBUG) || defined(CONFIG_VMALLOC_DEBUG))
+#define MEMLEAK_DETECT_SLEEP_SEC (5400 * HZ)
+
+#ifdef CONFIG_VMALLOC_DEBUG
+#ifdef CONFIG_MEMLEAK_DETECT_THREAD
+extern void dump_vmalloc_debug(char *dump_buff, int len);
+#endif
+extern void enable_vmalloc_debug(void);
+#endif
+
+#ifdef CONFIG_MEMLEAK_DETECT_THREAD
+#define DUMP_BUFF_LEN (PAGE_SIZE << 1)
+extern void kmalloc_debug_watermark_init(void);
+extern void dump_kmalloc_debug_info(struct kmem_cache *s, int index,
+		char *dump_buff, int len);
+extern void dump_ion_info(char *dump_buff, int len);
+#endif
+
+#ifdef CONFIG_KMALLOC_DEBUG
+extern int kbuf_dump_kmalloc_debug(struct kmem_cache *s, char *kbuf, int buff_len);
+#define KD_VALUE_LEN 32
+
+unsigned long calculate_kmalloc_slab_size(struct kmem_cache *s)
+{
+	struct slabinfo sinfo;
+
+	memset(&sinfo, 0, sizeof(sinfo));
+	get_slabinfo(s, &sinfo);
+	memcg_accumulate_slabinfo(s, &sinfo);
+	return sinfo.num_objs * s->object_size;
+}
+
+static void *kmo_start(struct seq_file *m, loff_t *pos)
+{
+	struct kmem_cache *s = NULL;
+
+	while (*pos <= KMALLOC_SHIFT_HIGH) {
+		s = kmalloc_caches[*pos];
+		if (s && (s->flags & SLAB_STORE_USER))
+			return (void *)s;
+		++*pos;
+	}
+	return NULL;
+}
+
+static void *kmo_next(struct seq_file *m, void *p, loff_t *pos)
+{
+	struct kmem_cache *s = NULL;
+
+	++*pos;
+	while (*pos <= KMALLOC_SHIFT_HIGH) {
+		s = kmalloc_caches[*pos];
+		if (s && (s->flags & SLAB_STORE_USER))
+			return (void *)s;
+		++*pos;
+	}
+
+	return NULL;
+}
+
+static void *kmd_start(struct seq_file *m, loff_t *pos)
+{
+	struct kmem_cache *s = NULL;
+
+	while (*pos <= KMALLOC_SHIFT_HIGH) {
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[*pos]);
+		if (s && (s->flags & SLAB_STORE_USER))
+			return (void *)s;
+		++*pos;
+	}
+
+	return NULL;
+}
+
+static void *kmd_next(struct seq_file *m, void *p, loff_t *pos)
+{
+	struct kmem_cache *s = NULL;
+
+	++*pos;
+	while (*pos <= KMALLOC_SHIFT_HIGH) {
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[*pos]);
+		if (s && (s->flags & SLAB_STORE_USER))
+			return (void *)s;
+		++*pos;
+	}
+
+	return NULL;
+}
+
+static void kmd_stop(struct seq_file *m, void *p)
+{
+}
+
+static int kmd_show(struct seq_file *m, void *p)
+{
+	struct kmem_cache *s = (struct kmem_cache *)p;
+	int ret = kbuf_dump_kmalloc_debug(s, (char *)m->private, PAGE_SIZE);
+	if (!ret)
+		return 0;
+
+	seq_printf(m, "=== slab %s debug info:\n", s->name);
+	seq_printf(m, "%s\n", (char *)m->private);
+	return 0;
+}
+
+static const struct seq_operations kmalloc_debug_op = {
+	.start	= kmd_start,
+	.next	= kmd_next,
+	.show	= kmd_show,
+	.stop	= kmd_stop
+};
+
+static const struct seq_operations kmalloc_origin_op = {
+	.start	= kmo_start,
+	.next	= kmo_next,
+	.show	= kmd_show,
+	.stop	= kmd_stop
+};
+
+static int kmalloc_debug_open(struct inode *inode, struct file *file)
+{
+	char *priv = __seq_open_private(file, &kmalloc_debug_op, PAGE_SIZE);
+
+	if (!priv)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static int kmalloc_origin_open(struct inode *inode, struct file *file)
+{
+	char *priv = __seq_open_private(file, &kmalloc_origin_op, PAGE_SIZE);
+
+	if (!priv)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static ssize_t kmalloc_debug_enable_write(struct file *file,
+	const char __user *buff, size_t len, loff_t *ppos)
+{
+	char kbuf[KD_VALUE_LEN] = {'0'};
+	long val;
+	int ret;
+
+	if (len > (KD_VALUE_LEN - 1))
+		len = KD_VALUE_LEN - 1;
+
+	if (copy_from_user(&kbuf, buff, len))
+		return -EFAULT;
+	kbuf[len] = '\0';
+
+	ret = kstrtol(kbuf, 10, &val);
+	if (ret)
+		return -EINVAL;
+
+	kmalloc_debug_enable = val ? 1 : 0;
+	return len;
+}
+
+static ssize_t kmalloc_debug_enable_read(struct file *file,
+			char __user *buffer, size_t count, loff_t *off)
+{
+	char kbuf[KD_VALUE_LEN] = {'0'};
+	int len;
+
+	len = scnprintf(kbuf, KD_VALUE_LEN - 1, "%d\n", kmalloc_debug_enable);
+	if (kbuf[len - 1] != '\n')
+		kbuf[len++] = '\n';
+
+	if (len > *off)
+		len -= *off;
+	else
+		len = 0;
+
+	if (copy_to_user(buffer, kbuf + *off, (len < count ? len : count)))
+		return -EFAULT;
+
+	*off += (len < count ? len : count);
+	return (len < count ? len : count);
+}
+
+static ssize_t kmalloc_used_read(struct file *file,
+			char __user *buffer, size_t count, loff_t *off)
+{
+	char kbuf[512];
+	int len = 0;
+	int i;
+
+	for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+		unsigned long slab_size;
+		struct kmem_cache *s = kmalloc_caches[i];
+
+		if (!s)
+			continue;
+
+		slab_size = calculate_kmalloc_slab_size(s);
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[i]);
+		if (s)
+			slab_size += calculate_kmalloc_slab_size(s);
+
+		if (len >= 511)
+			break;
+		len += scnprintf(&kbuf[len], 511 - len, "%-8u %lu\n",
+				kmalloc_debug_info[i].size, slab_size >> 10);
+
+	}
+	if ((len > 0) && (kbuf[len - 1] != '\n'))
+		kbuf[len++] = '\n';
+
+	if (len > *off)
+		len -= *off;
+	else
+		len = 0;
+
+	if (copy_to_user(buffer, kbuf + *off, (len < count ? len : count)))
+		return -EFAULT;
+
+	*off += (len < count ? len : count);
+	return (len < count ? len : count);
+}
+
+static const struct file_operations kmalloc_used_ops = {
+	.read		= kmalloc_used_read,
+};
+
+static const struct file_operations kmalloc_debug_enable_operations = {
+	.write          = kmalloc_debug_enable_write,
+	.read		= kmalloc_debug_enable_read,
+};
+
+static const struct file_operations kmalloc_debug_operations = {
+	.open		= kmalloc_debug_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release_private,
+};
+
+static const struct file_operations kmalloc_origin_operations = {
+	.open		= kmalloc_origin_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release_private,
+};
+
+int __init create_kmalloc_debug(struct proc_dir_entry *parent)
+{
+	struct proc_dir_entry *dpentry;
+	struct proc_dir_entry *opentry;
+	struct proc_dir_entry *cpentry;
+	struct proc_dir_entry *epentry;
+	struct proc_dir_entry *upentry;
+
+	dpentry = proc_create("kmalloc_debug", S_IRUGO, parent,
+			&kmalloc_debug_operations);
+	if (!dpentry) {
+		pr_err("create kmalloc_debug proc failed.\n");
+		return -ENOMEM;
+	}
+
+	opentry = proc_create("kmalloc_origin", S_IRUGO, parent,
+			&kmalloc_origin_operations);
+	if (!opentry) {
+		pr_err("create kmalloc_origin proc failed.\n");
+		proc_remove(dpentry);
+		return -ENOMEM;
+	}
+
+	epentry = proc_create("kmalloc_debug_enable", S_IRUGO|S_IWUGO, parent,
+			&kmalloc_debug_enable_operations);
+	if (!epentry) {
+		pr_err("create kmalloc_debug_enable proc failed.\n");
+		proc_remove(opentry);
+		proc_remove(dpentry);
+		return -ENOMEM;
+	}
+
+	upentry = proc_create("kmalloc_used", S_IRUGO, parent,
+			&kmalloc_used_ops);
+	if (!upentry) {
+		pr_err("create kmalloc_used proc failed.\n");
+		proc_remove(epentry);
+		proc_remove(opentry);
+		proc_remove(dpentry);
+		return -ENOMEM;
+	}
+
+	/* add new proc interface for create kmalloc debug caches.  */
+	cpentry = proc_create("kmalloc_debug_create", S_IRUGO|S_IWUGO, parent,
+			&kmalloc_debug_create_operations);
+	if (!cpentry) {
+		pr_err("create kmalloc_debug_create proc failed.\n");
+		proc_remove(upentry);
+		proc_remove(epentry);
+		proc_remove(opentry);
+		proc_remove(dpentry);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(create_kmalloc_debug);
+#endif
+
+#if defined(CONFIG_MEMLEAK_DETECT_THREAD) && defined(CONFIG_OPPO_SVELTE)
+static int memleak_detect_thread(void *arg)
+{
+	long ret = 0;
+	long sleep_jiffies = MEMLEAK_DETECT_SLEEP_SEC;
+#ifdef CONFIG_KMALLOC_DEBUG
+	int i = 0;
+#endif
+
+	do {
+		char *dump_buff = NULL;
+
+		current->state = TASK_INTERRUPTIBLE;
+		ret = schedule_timeout(sleep_jiffies);
+		if (ret) {
+			sleep_jiffies = ret;
+			continue;
+		}
+		sleep_jiffies = MEMLEAK_DETECT_SLEEP_SEC;
+
+		dump_buff = (char *)vmalloc(DUMP_BUFF_LEN);
+		if (!dump_buff) {
+			pr_err("[%s] vmalloc dump_buff failed.\n", __func__);
+			continue;
+		}
+
+#ifdef CONFIG_VMALLOC_DEBUG
+		dump_vmalloc_debug(dump_buff, DUMP_BUFF_LEN);
+#endif
+
+#ifdef CONFIG_KMALLOC_DEBUG
+		for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+			struct kmem_cache *s = kmalloc_caches[i];
+
+			if (!s)
+				continue;
+			if (s->flags & SLAB_STORE_USER)
+				dump_kmalloc_debug_info(s, i, dump_buff,
+						DUMP_BUFF_LEN);
+		}
+
+		for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+			struct kmem_cache *s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[i]);
+
+			if (!s)
+				continue;
+			if (s->flags & SLAB_STORE_USER)
+				dump_kmalloc_debug_info(s, i, dump_buff,
+						DUMP_BUFF_LEN);
+		}
+#endif
+
+		dump_ion_info(dump_buff, DUMP_BUFF_LEN);
+		vfree(dump_buff);
+	} while (!kthread_should_stop());
+
+	return 0;
+}
+
+static inline void init_kmalloc_debug_caches(unsigned long flags)
+{
+	int i;
+
+	kmalloc_debug_enable = 1;
+	for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
+		(void)create_kmalloc_debug_caches(kmalloc_info[i].size, flags);
+
+		/*
+		 * Caches that are not of the two-to-the-power-of size.
+		 * These have to be created immediately after the
+		 * earlier power of two caches
+		 */
+		if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6)
+			(void)create_kmalloc_debug_caches(kmalloc_info[i].size,
+					flags);
+		if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7)
+			(void)create_kmalloc_debug_caches(kmalloc_info[i].size,
+					flags);
+	}
+}
+
+static int __init memleak_detect_init(void)
+{
+	struct task_struct *thread;
+
+#ifdef CONFIG_VMALLOC_DEBUG
+	enable_vmalloc_debug();
+#endif
+
+#ifdef CONFIG_KMALLOC_DEBUG
+	init_kmalloc_debug_caches(SLAB_STORE_USER);
+	kmalloc_debug_watermark_init();
+#endif
+
+	thread = kthread_create(memleak_detect_thread, NULL, "memleak_detect");
+	if (thread != NULL)
+		wake_up_process(thread);
+	else
+		pr_warn("[kmalloc_debug][vmalloc_debug] memleak_detect_init failed.\n");
+
+	return 0;
+}
+module_init(memleak_detect_init);
+#endif /* CONFIG_MEMLEAK_DETECT_THREAD */
+#endif
 
 static int __init slab_proc_init(void)
 {

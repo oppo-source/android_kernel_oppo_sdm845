@@ -255,7 +255,9 @@ struct sde_crtc {
 	bool vblank_requested;
 	bool suspend;
 	bool enabled;
+#ifndef VENDOR_EDIT
 	bool reset_request;
+#endif /*VENDOR_EDIT*/
 
 	bool ds_reconfig;
 	struct list_head feature_list;
@@ -427,6 +429,12 @@ struct sde_crtc_state {
 	bool sbuf_clk_shifted;
 
 	struct sde_crtc_respool rp;
+#ifdef VENDOR_EDIT
+	bool fingerprint_mode;
+	bool fingerprint_pressed;
+	bool fingerprint_defer_sync;
+	struct sde_hw_dim_layer *fingerprint_dim_layer;
+#endif /*VENDOR_EDIT*/
 };
 
 enum sde_crtc_irq_state {

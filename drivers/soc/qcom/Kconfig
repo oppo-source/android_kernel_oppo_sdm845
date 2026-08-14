@@ -972,3 +972,8 @@ config BIG_CLUSTER_MIN_FREQ_ADJUST
 	  This driver is used to set the floor of the min frequency of big cluster
 	  to the user specified value when the cluster is not power collapsed. When
 	  the cluster is power collpsed it resets the value to physical limits.
+
+config OPLUS_FEATURE_MODEM_MINIDUMP
+        bool "Add for oplus modem minidump function"
+        help
+          Add for oplus modem minidump function.

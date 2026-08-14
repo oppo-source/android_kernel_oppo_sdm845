@@ -20,6 +20,10 @@
 #include <trace/events/sched.h>
 #include <linux/sched/sysctl.h>
 
+#ifdef CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE
+#include <soc/oplus/system/hung_task_enhance.h>
+#endif
+
 /*
  * The number of tasks checked:
  */
@@ -50,6 +54,10 @@ unsigned long __read_mostly sysctl_hung_task_timeout_secs = CONFIG_DEFAULT_HUNG_
 int __read_mostly sysctl_hung_task_warnings = 10;
 
 static int __read_mostly did_panic;
+#ifdef CONFIG_DETECT_HUNG_TASK
+static bool hung_task_show_lock;
+static bool hung_task_call_panic;
+#endif
 
 static struct task_struct *watchdog_task;
 
@@ -82,6 +90,7 @@ static struct notifier_block panic_block = {
 	.notifier_call = hung_task_panic,
 };
 
+#ifndef CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE
 static void check_hung_task(struct task_struct *t, unsigned long timeout)
 {
 	unsigned long switch_count = t->nvcsw + t->nivcsw;
@@ -103,20 +112,28 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 
 	if (switch_count != t->last_switch_count) {
 		t->last_switch_count = switch_count;
+		t->last_switch_time = jiffies;
 		return;
 	}
 
+	if (time_is_after_jiffies(t->last_switch_time + timeout * HZ))
+		return;
+
 	trace_sched_process_hang(t);
 
-	if (!sysctl_hung_task_warnings && !sysctl_hung_task_panic)
-		return;
+	if (sysctl_hung_task_panic) {
+		console_verbose();
+		hung_task_show_lock = true;
+		hung_task_call_panic = true;
+	}
 
 	/*
 	 * Ok, the task did not get scheduled for more than 2 minutes,
 	 * complain:
 	 */
 	if (sysctl_hung_task_warnings) {
-		sysctl_hung_task_warnings--;
+		if (sysctl_hung_task_warnings > 0)
+			sysctl_hung_task_warnings--;
 		pr_err("INFO: task %s:%d blocked for more than %ld seconds.\n",
 			t->comm, t->pid, timeout);
 		pr_err("      %s %s %.*s\n",
@@ -126,16 +143,12 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 		pr_err("\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\""
 			" disables this message.\n");
 		sched_show_task(t);
-		debug_show_all_locks();
+		hung_task_show_lock = true;
 	}
 
 	touch_nmi_watchdog();
-
-	if (sysctl_hung_task_panic) {
-		trigger_all_cpu_backtrace();
-		panic("hung_task: blocked tasks");
-	}
 }
+#endif
 
 /*
  * To avoid extending the RCU grace period for an unbounded amount of time,
@@ -171,13 +184,19 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 	unsigned long last_break = jiffies;
 	struct task_struct *g, *t;
 
+#if defined(CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE) && defined(CONFIG_OPLUS_FEATURE_DEATH_HEALER)
+	unsigned int iowait_count = 0;
+#endif
+
 	/*
 	 * If the system crashed already then all bets are off,
 	 * do not report extra hung tasks:
 	 */
 	if (test_taint(TAINT_DIE) || did_panic)
 		return;
-
+#ifdef CONFIG_DETECT_HUNG_TASK
+	hung_task_show_lock = false;
+#endif
 	rcu_read_lock();
 	for_each_process_thread(g, t) {
 		if (!max_count--)
@@ -187,15 +206,30 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 				goto unlock;
 			last_break = jiffies;
 		}
+#if defined(CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE) && defined(CONFIG_OPLUS_FEATURE_DEATH_HEALER)
+		io_check_hung_detection(t, timeout, &iowait_count, &hung_task_show_lock, &hung_task_call_panic);
+#else
 		/* use "==" to skip the TASK_KILLABLE tasks waiting on NFS */
 		if (t->state == TASK_UNINTERRUPTIBLE)
 			/* Check for selective monitoring */
 			if (!sysctl_hung_task_selective_monitoring ||
 			    t->hang_detection_enabled)
 				check_hung_task(t, timeout);
+#endif
 	}
  unlock:
+#if defined(CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE) && defined(CONFIG_OPLUS_FEATURE_DEATH_HEALER)
+	io_block_panic(&iowait_count, sysctl_hung_task_maxiowait_count);
+#endif
 	rcu_read_unlock();
+#ifdef CONFIG_DETECT_HUNG_TASK
+	if (hung_task_show_lock)
+		debug_show_all_locks();
+	if (hung_task_call_panic) {
+		trigger_all_cpu_backtrace();
+		panic("hung_task: blocked tasks");
+	}
+#endif
 }
 
 static long hung_timeout_jiffies(unsigned long last_checked,

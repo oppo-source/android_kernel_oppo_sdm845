@@ -38,6 +38,9 @@
 #include "sde_power_handle.h"
 #include "sde_core_perf.h"
 #include "sde_trace.h"
+#ifdef VENDOR_EDIT
+int oppo_underbrightness_alpha = 0;
+#endif
 
 #define SDE_PSTATES_MAX (SDE_STAGE_MAX * 4)
 #define SDE_MULTIRECT_PLANE_MAX (SDE_STAGE_MAX * 2)
@@ -786,6 +789,10 @@ static void _sde_crtc_setup_blend_cfg(struct sde_crtc_mixer *mixer,
 
 	/* default to opaque blending */
 	fg_alpha = sde_plane_get_property(pstate, PLANE_PROP_ALPHA);
+	#ifdef VENDOR_EDIT
+	if (pstate->is_skip)
+		fg_alpha = 0;
+	#endif /* VENDOR_EDIT */
 	bg_alpha = 0xFF - fg_alpha;
 	blend_op = SDE_BLEND_FG_ALPHA_FG_CONST | SDE_BLEND_BG_ALPHA_BG_CONST;
 	blend_type = sde_plane_get_property(pstate, PLANE_PROP_BLEND_OP);
@@ -1649,6 +1656,12 @@ static void _sde_crtc_blend_setup_mixer(struct drm_crtc *crtc,
 		for (i = 0; i < cstate->num_dim_layers; i++)
 			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
 					mixer, &cstate->dim_layer[i]);
+
+#ifdef VENDOR_EDIT
+		if (cstate->fingerprint_dim_layer)
+			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
+					mixer, cstate->fingerprint_dim_layer);
+#endif
 	}
 
 	_sde_crtc_program_lm_output_roi(crtc);
@@ -2600,6 +2613,93 @@ static void _sde_crtc_set_dim_layer_v1(struct sde_crtc_state *cstate,
 				dim_layer[i].color_fill.color_3);
 	}
 }
+#ifdef VENDOR_EDIT
+bool sde_crtc_get_dimlayer_mode(struct drm_crtc_state *crtc_state)
+{
+	struct sde_crtc_state *cstate;
+
+	if (!crtc_state)
+		return false;
+
+	cstate = to_sde_crtc_state(crtc_state);
+	return !!cstate->fingerprint_dim_layer;
+}
+
+bool sde_crtc_get_fingerprint_mode(struct drm_crtc_state *crtc_state)
+{
+	struct sde_crtc_state *cstate;
+
+	if (!crtc_state)
+		return false;
+
+	cstate = to_sde_crtc_state(crtc_state);
+	return !!cstate->fingerprint_mode;
+}
+
+bool sde_crtc_get_fingerprint_pressed(struct drm_crtc_state *crtc_state)
+{
+	struct sde_crtc_state *cstate;
+
+	if (!crtc_state)
+		return false;
+
+	cstate = to_sde_crtc_state(crtc_state);
+	return cstate->fingerprint_pressed;
+}
+
+int sde_crtc_set_onscreenfinger_defer_sync(struct drm_crtc_state *crtc_state, bool defer_sync)
+{
+	struct sde_crtc_state *cstate;
+
+	if (!crtc_state)
+		return -EINVAL;
+
+	cstate = to_sde_crtc_state(crtc_state);
+	cstate->fingerprint_defer_sync = defer_sync;
+	return 0;
+}
+
+int oppo_get_panel_brightness_to_alpha(void);
+static int sde_crtc_config_fingerprint_dim_layer(struct drm_crtc_state *crtc_state, int stage)
+{
+	struct sde_crtc_state *cstate;
+	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+	struct sde_hw_dim_layer *fingerprint_dim_layer;
+	int alpha = oppo_get_panel_brightness_to_alpha();
+	struct sde_kms *kms;
+
+	kms = _sde_crtc_get_kms(crtc_state->crtc);
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("invalid kms\n");
+		return -EINVAL;
+	}
+
+	cstate = to_sde_crtc_state(crtc_state);
+
+	if (cstate->num_dim_layers == SDE_MAX_DIM_LAYERS - 1) {
+		pr_err("failed to get available dim layer for custom\n");
+		return -EINVAL;
+	}
+
+	if ((stage + SDE_STAGE_0) >= kms->catalog->mixer[0].sblk->maxblendstages) {
+		return -EINVAL;
+	}
+
+	fingerprint_dim_layer = &cstate->dim_layer[cstate->num_dim_layers];
+	fingerprint_dim_layer->flags = SDE_DRM_DIM_LAYER_INCLUSIVE;
+	fingerprint_dim_layer->stage = stage + SDE_STAGE_0;
+
+	fingerprint_dim_layer->rect.x = 0;
+	fingerprint_dim_layer->rect.y = 0;
+	fingerprint_dim_layer->rect.w = mode->hdisplay;
+	fingerprint_dim_layer->rect.h = mode->vdisplay;
+	fingerprint_dim_layer->color_fill = (struct sde_mdss_color) {0, 0, 0, alpha};
+	cstate->fingerprint_dim_layer = fingerprint_dim_layer;
+	oppo_underbrightness_alpha = alpha;
+
+	return 0;
+}
+#endif
 
 /**
  * _sde_crtc_set_dest_scaler - copy dest scaler settings from userspace
@@ -3523,8 +3623,13 @@ static void _sde_crtc_remove_pipe_flush(struct sde_crtc *sde_crtc)
  * @dump_status: Whether or not to dump debug status before reset
  * Returns: Zero if current commit should still be attempted
  */
+#ifndef VENDOR_EDIT
 static int _sde_crtc_reset_hw(struct drm_crtc *crtc,
 		struct drm_crtc_state *old_state, bool dump_status)
+#else
+static int _sde_crtc_reset_hw(struct drm_crtc *crtc,
+		struct drm_crtc_state *old_state, bool recovery_events)
+#endif /*VENDOR_EDIT*/
 {
 	struct drm_plane *plane_halt[MAX_PLANES];
 	struct drm_plane *plane;
@@ -3543,11 +3648,16 @@ static int _sde_crtc_reset_hw(struct drm_crtc *crtc,
 	cstate = to_sde_crtc_state(crtc->state);
 
 	old_rot_op_mode = to_sde_crtc_state(old_state)->sbuf_cfg.rot_op_mode;
+#ifndef VENDOR_EDIT
 	SDE_EVT32(DRMID(crtc), old_rot_op_mode,
 			dump_status, SDE_EVTLOG_FUNC_ENTRY);
 
 	if (dump_status)
 		SDE_DBG_DUMP("all", "dbg_bus", "vbif_dbg_bus");
+#else
+	SDE_EVT32(DRMID(crtc), old_rot_op_mode,
+			recovery_events, SDE_EVTLOG_FUNC_ENTRY);
+#endif /*VENDOR_EDIT*/
 
 	/* optionally generate a panic instead of performing a h/w reset */
 	SDE_DBG_CTRL("stop_ftrace", "reset_hw_panic");
@@ -3655,6 +3765,14 @@ static int _sde_crtc_reset_hw(struct drm_crtc *crtc,
 		if (sde_encoder_get_intf_mode(encoder) == INTF_MODE_VIDEO)
 			sde_encoder_kickoff(encoder, false);
 	}
+#ifdef VENDOR_EDIT
+	/**
+	 * or panic the device if VBIF are still not in good state
+	 */
+
+	if (!recovery_events)
+		return false;
+#endif /*VENDOR_EDIT*/
 
 	return -EAGAIN;
 }
@@ -3723,7 +3841,11 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct sde_crtc_state *cstate;
+#ifndef VENDOR_EDIT
 	bool is_error, reset_req;
+#else
+	bool is_error, reset_req, recovery_events;
+#endif /*VENDOR_EDIT*/
 	enum sde_crtc_idle_pc_state idle_pc_state;
 	unsigned long flags;
 
@@ -3774,6 +3896,10 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 		if (sde_encoder_prepare_for_kickoff(encoder, &params))
 			reset_req = true;
 
+#ifdef VENDOR_EDIT
+		recovery_events = sde_encoder_recovery_events_enabled(encoder);
+#endif /*VENDOR_EDIT*/
+
 		if (idle_pc_state != IDLE_PC_NONE)
 			sde_encoder_control_idle_pc(encoder,
 			    (idle_pc_state == IDLE_PC_ENABLE) ? true : false);
@@ -3783,13 +3909,19 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 	 * Optionally attempt h/w recovery if any errors were detected while
 	 * preparing for the kickoff
 	 */
+#ifndef VENDOR_EDIT
 	if (reset_req) {
 		if (_sde_crtc_reset_hw(crtc, old_state,
 					!sde_crtc->reset_request))
+#else
+	if (reset_req) {
+		if (_sde_crtc_reset_hw(crtc, old_state, recovery_events))
+#endif /*VENDOR_EDIT*/
 			is_error = true;
 	}
+#ifndef VENDOR_EDIT
 	sde_crtc->reset_request = reset_req;
-
+#endif /*VENDOR_EDIT*/
 	SDE_ATRACE_BEGIN("flush_event_thread");
 	_sde_crtc_flush_event_thread(crtc);
 	SDE_ATRACE_END("flush_event_thread");
@@ -4619,6 +4751,150 @@ static int _sde_crtc_check_secure_state(struct drm_crtc *crtc,
 	return 0;
 }
 
+#ifdef VENDOR_EDIT
+extern int oppo_force_screenfp;
+extern int oppo_onscreenfp_status;
+extern int lcd_closebl_flag_fp;
+extern int oppo_dimlayer_hbm;
+extern int oppo_dimlayer_bl_alpha_value;
+extern bool is_dsi_panel(struct drm_crtc *crtc);
+extern int oppo_get_panel_brightness(void);
+extern int oppo_dimlayer_bl_enable;
+extern bool oppo_ffl_trigger_finish;
+int oppo_dimlayer_bl = 0;
+extern ktime_t oppo_backlight_time;
+extern u32 oppo_last_backlight;
+extern u32 oppo_backlight_delta;
+static int sde_crtc_onscreenfinger_atomic_check(struct sde_crtc_state *cstate,
+		struct plane_state *pstates, int cnt)
+{
+	int fp_index = -1;
+	int fppressed_index = -1;
+	int aod_index = -1;
+	int zpos = INT_MAX;
+	int mode;
+	int fp_mode = oppo_onscreenfp_status;
+	int dimlayer_hbm = oppo_dimlayer_hbm;
+	int dimlayer_bl = 0;
+	int i;
+
+	for (i = 0; i < cnt; i++) {
+		mode = sde_plane_check_fingerprint_layer(pstates[i].drm_pstate);
+		if (mode == 1)
+			fp_index = i;
+		if (mode == 2)
+			fppressed_index = i;
+		if (mode == 3)
+			aod_index = i;
+		if (pstates[i].sde_pstate)
+			pstates[i].sde_pstate->is_skip = false;
+	}
+
+	if (!is_dsi_panel(cstate->base.crtc))
+		return 0;
+
+	if (oppo_dimlayer_bl_enable) {
+		int backlight = oppo_get_panel_brightness();
+
+		if (backlight > 1 && backlight < oppo_dimlayer_bl_alpha_value &&
+		    oppo_ffl_trigger_finish == true) {
+			ktime_t now = ktime_get();
+			ktime_t delta = ktime_sub(now, oppo_backlight_time);
+
+			if (oppo_backlight_delta > 9) {
+				if (oppo_dimlayer_bl == 0 && ktime_to_ns(delta) > 15000000)
+					oppo_dimlayer_bl = 1;
+			} else {
+				oppo_dimlayer_bl = 1;
+			}
+			if (oppo_dimlayer_bl)
+				dimlayer_bl = 1;
+		} else {
+			oppo_dimlayer_bl = 0;
+		}
+	} else {
+		oppo_dimlayer_bl = 0;
+	}
+
+	if (fppressed_index >= 0) {
+		if (fp_mode == 0) {
+			pstates[fppressed_index].sde_pstate->is_skip = true;
+			fppressed_index = -1;
+		}
+	}
+
+	if (dimlayer_hbm || dimlayer_bl) {
+		if (fp_index >= 0 && fppressed_index >= 0) {
+			if (pstates[fp_index].stage >= pstates[fppressed_index].stage) {
+				SDE_ERROR("Bug!!: fp layer top of fppressed layer\n");
+				return -EINVAL;
+			}
+		}
+
+		if (lcd_closebl_flag_fp) {
+			oppo_underbrightness_alpha = 0;
+			cstate->fingerprint_dim_layer = NULL;
+			cstate->fingerprint_mode = false;
+			return 0;
+		}
+
+		if (dimlayer_hbm)
+			cstate->fingerprint_mode = true;
+		else
+			cstate->fingerprint_mode = false;
+
+		if (aod_index >= 0) {
+			if (zpos > pstates[aod_index].stage)
+				zpos = pstates[aod_index].stage;
+			pstates[aod_index].stage++;
+		}
+		if (fppressed_index >= 0) {
+			if (zpos > pstates[fppressed_index].stage)
+				zpos = pstates[fppressed_index].stage;
+			pstates[fppressed_index].stage++;
+		}
+		if (fp_index >= 0) {
+			if (zpos > pstates[fp_index].stage)
+				zpos = pstates[fp_index].stage;
+			pstates[fp_index].stage++;
+		}
+
+		for (i = 0; i < cnt; i++) {
+			if (i == fp_index || i == fppressed_index ||
+			    i == aod_index)
+				continue;
+			if (pstates[i].stage >= zpos) {
+				pstates[i].stage++;
+			}
+		}
+
+		if (zpos == INT_MAX) {
+			zpos = 0;
+			for (i = 0; i < cnt; i++) {
+				if (pstates[i].stage > zpos)
+					zpos = pstates[i].stage;
+			}
+			zpos++;
+		}
+
+		if (sde_crtc_config_fingerprint_dim_layer(&cstate->base, zpos)) {
+			//SDE_ERROR("Failed to config dim layer\n");
+			return -EINVAL;
+		}
+		if (fppressed_index >= 0)
+			cstate->fingerprint_pressed = true;
+		else
+			cstate->fingerprint_pressed = false;
+	} else {
+		oppo_underbrightness_alpha = 0;
+		cstate->fingerprint_dim_layer = NULL;
+		cstate->fingerprint_mode = false;
+		cstate->fingerprint_pressed = false;
+	}
+
+	return 0;
+}
+#endif /* VENDOR_EDIT */
 static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 		struct drm_crtc_state *state)
 {
@@ -4768,6 +5044,12 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 			sde_plane_clear_multirect(pipe_staged[i]);
 		}
 	}
+
+#ifdef VENDOR_EDIT
+	rc = sde_crtc_onscreenfinger_atomic_check(cstate, pstates, cnt);
+	if (rc)
+		goto end;
+#endif
 
 	/* assign mixer stages based on sorted zpos property */
 	sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
@@ -5149,8 +5431,13 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 	if (catalog->has_dim_layer) {
 		msm_property_install_volatile_range(&sde_crtc->property_info,
 			"dim_layer_v1", 0x0, 0, ~0, 0, CRTC_PROP_DIM_LAYER_V1);
+#ifdef VENDOR_EDIT
+		sde_kms_info_add_keyint(info, "dim_layer_v1_max_layers",
+				SDE_MAX_DIM_LAYERS - 1);
+#else
 		sde_kms_info_add_keyint(info, "dim_layer_v1_max_layers",
 				SDE_MAX_DIM_LAYERS);
+#endif /* VENDOR_EDIT */
 	}
 
 	sde_kms_info_add_keyint(info, "hw_version", catalog->hwversion);

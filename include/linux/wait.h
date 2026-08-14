@@ -218,6 +218,7 @@ wait_queue_head_t *bit_waitqueue(void *, int);
 #define wake_up_all(x)			__wake_up(x, TASK_NORMAL, 0, NULL)
 #define wake_up_locked(x)		__wake_up_locked((x), TASK_NORMAL, 1)
 #define wake_up_all_locked(x)		__wake_up_locked((x), TASK_NORMAL, 0)
+#define wake_up_sync(x)			__wake_up_sync((x), TASK_NORMAL, 1)
 
 #define wake_up_interruptible(x)	__wake_up(x, TASK_INTERRUPTIBLE, 1, NULL)
 #define wake_up_interruptible_nr(x, nr)	__wake_up(x, TASK_INTERRUPTIBLE, nr, NULL)
@@ -261,7 +262,34 @@ extern void init_wait_entry(wait_queue_t *__wait, int flags);
  * on purpose; we use long where we can return timeout values and int
  * otherwise.
  */
-
+#ifdef CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE
+#define ___wait_event(wq, condition, state, exclusive, ret, cmd)	\
+({									\
+	__label__ __out;						\
+	wait_queue_t __wait;						\
+	long __ret = ret;	/* explicit shadow */			\
+									\
+	init_wait_entry(&__wait, exclusive ? WQ_FLAG_EXCLUSIVE : 0);	\
+	for (;;) {							\
+		long __int = prepare_to_wait_event(&wq, &__wait, state);\
+									\
+		if (condition)						\
+			break;						\
+									\
+		if (___wait_is_interruptible(state) && __int) {		\
+			__ret = __int;					\
+			goto __out;					\
+		}							\
+									\
+		if(hung_long_and_fatal_signal_pending(current)) { 	\
+			break;						\
+		}							\
+		cmd;							\
+	}								\
+	finish_wait(&wq, &__wait);					\
+__out:	__ret;								\
+})
+#else
 #define ___wait_event(wq, condition, state, exclusive, ret, cmd)	\
 ({									\
 	__label__ __out;						\
@@ -285,7 +313,7 @@ extern void init_wait_entry(wait_queue_t *__wait, int flags);
 	finish_wait(&wq, &__wait);					\
 __out:	__ret;								\
 })
-
+#endif /* CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE */
 #define __wait_event(wq, condition)					\
 	(void)___wait_event(wq, condition, TASK_UNINTERRUPTIBLE, 0, 0,	\
 			    schedule())

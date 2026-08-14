@@ -34,6 +34,10 @@
 #include <soc/qcom/restart.h>
 #include <soc/qcom/watchdog.h>
 #include <soc/qcom/minidump.h>
+#ifdef CONFIG_OPLUS_FEATURE_QCOM_MINIDUMP_ENHANCE
+#include <soc/oplus/system/oppo_project.h>
+#include <soc/oplus/system/qcom_minidump_enhance.h>
+#endif
 
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
@@ -77,7 +81,15 @@ static const int download_mode;
 #endif
 
 static int in_panic;
-static int dload_type = SCM_DLOAD_FULLDUMP;
+#ifndef OPLUS_BUG_STABILITY 
+int dload_type = SCM_DLOAD_FULLDUMP;
+#else
+#if defined(CONFIG_OPPO_DEBUG_BUILD)
+int dload_type = SCM_DLOAD_FULLDUMP;
+#else
+int dload_type = SCM_DLOAD_MINIDUMP;
+#endif
+#endif /* OPLUS_BUG_STABILITY */
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
 static void *emergency_dload_mode_addr;
@@ -87,6 +99,27 @@ static void *kaslr_imem_addr;
 static bool scm_dload_supported;
 static struct kobject dload_kobj;
 static void *dload_type_addr;
+static bool force_warm_reboot;
+#ifdef VENDOR_EDIT
+static int romupdate_minidumpdisable = 0;
+static int __init minidump_disable_param(char *str)
+{
+	if (*str)
+		return 0;
+	romupdate_minidumpdisable = 1;
+	return 1;
+}
+__setup("minidump.disable", minidump_disable_param);
+#endif /*VENDOR_EDIT*/
+/*VENDOR_EDIT*/
+//#ifdef VENDOR_EDIT
+/*chaochao.xie .BSP.Kernel.Storage, 2019-11-27, add for 5G modem dump issue*/
+int get_download_mode(void)
+{
+	return download_mode && (dload_type & SCM_DLOAD_FULLDUMP);
+}
+EXPORT_SYMBOL(get_download_mode);
+//#endif
 
 static int dload_set(const char *val, const struct kernel_param *kp);
 /* interface for exporting attributes */
@@ -140,6 +173,52 @@ static int scm_set_dload_mode(int arg1, int arg2)
 				&desc);
 }
 
+#ifdef OPLUS_BUG_STABILITY
+bool is_fulldump_enable(void)
+{
+	return download_mode && (dload_type & SCM_DLOAD_FULLDUMP);
+}
+
+void oppo_switch_fulldump(int on)
+{
+	int ret;
+
+	if (dload_mode_addr) {
+		__raw_writel(0xE47B337D, dload_mode_addr);
+		__raw_writel(0xCE14091A,
+			dload_mode_addr + sizeof(unsigned int));
+		mb();
+	}
+	if(on){
+		ret = scm_set_dload_mode(SCM_DLOAD_FULLDUMP, 0);
+		if (ret)
+			pr_err("Failed to set secure DLOAD mode: %d\n", ret);
+		dload_type = SCM_DLOAD_FULLDUMP;
+	}else{
+		ret = scm_set_dload_mode(SCM_DLOAD_MINIDUMP, 0);
+		if (ret)
+			pr_err("Failed to set secure DLOAD mode: %d\n", ret);
+		dload_type = SCM_DLOAD_MINIDUMP;
+	}
+
+	if(dload_type == SCM_DLOAD_MINIDUMP)
+		__raw_writel(EMMC_DLOAD_TYPE, dload_type_addr);
+	else
+		__raw_writel(0, dload_type_addr);
+	dload_mode_enabled = on;
+}
+EXPORT_SYMBOL(oppo_switch_fulldump);
+
+
+void oppo_force_to_fulldump(bool force)
+{
+	if (force) {
+		msm_trigger_wdog_bite();
+	}
+}
+
+#endif /* OPLUS_BUG_STABILITY */
+
 static void set_dload_mode(int on)
 {
 	int ret;
@@ -155,6 +234,13 @@ static void set_dload_mode(int on)
 	ret = scm_set_dload_mode(on ? dload_type : 0, 0);
 	if (ret)
 		pr_err("Failed to set secure DLOAD mode: %d\n", ret);
+
+#ifdef CONFIG_OPLUS_FEATURE_QCOM_MINIDUMP_ENHANCE
+	if(dload_type == SCM_DLOAD_MINIDUMP)
+		__raw_writel(EMMC_DLOAD_TYPE, dload_type_addr);
+	else
+		__raw_writel(0, dload_type_addr);
+#endif /* CONFIG_OPLUS_FEATURE_QCOM_MINIDUMP_ENHANCE */
 
 	dload_mode_enabled = on;
 }
@@ -302,16 +388,32 @@ static void msm_restart_prepare(const char *cmd)
 		need_warm_reset = (get_dload_mode() ||
 				(cmd != NULL && cmd[0] != '\0'));
 	}
+#ifdef VENDOR_EDIT 
+	if (in_panic){
+		//warm reset
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+		qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_KERNEL);
+		flush_cache_all();
 
 	if (force_warm_reboot)
 		pr_info("Forcing a warm reset of the system\n");
 
+		/*outer_flush_all is not supported by 64bit kernel*/
+#ifndef CONFIG_ARM64
+		outer_flush_all();
+#endif
+		return;
+	}
+#endif /* VENDOR_EDIT */
 	/* Hard reset the PMIC unless memory contents must be maintained. */
 	if (force_warm_reboot || need_warm_reset)
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 	else
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 
+#ifndef VENDOR_EDIT
+/* OPPO 2013.07.09 hewei modify begin for restart mode*/
 	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
@@ -368,6 +470,86 @@ static void msm_restart_prepare(const char *cmd)
 			__raw_writel(0x77665501, restart_reason);
 		}
 	}
+#else //VENDOR_EDIT
+	if (cmd != NULL) {
+		#ifndef DISABLE_FASTBOOT_CMDS //disable fastboot modem at release soft
+		if (!strncmp(cmd, "bootloader", 10)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_BOOTLOADER);
+			__raw_writel(0x77665500, restart_reason);
+		} else 
+		#endif
+		if (!strncmp(cmd, "recovery", 8)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_RECOVERY);
+			__raw_writel(0x77665502, restart_reason);
+		} else if (!strcmp(cmd, "rtc")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_RTC);
+			__raw_writel(0x77665503, restart_reason);
+		} else if (!strcmp(cmd, "dm-verity device corrupted")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_DMVERITY_CORRUPTED);
+			__raw_writel(0x77665508, restart_reason);
+		} else if (!strcmp(cmd, "dm-verity enforcing")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_DMVERITY_ENFORCE);
+			__raw_writel(0x77665509, restart_reason);
+		} else if (!strcmp(cmd, "keys clear")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_KEYS_CLEAR);
+			__raw_writel(0x7766550a, restart_reason);
+		} else if (!strncmp(cmd, "oem-", 4)) { //we donot need oem-
+			unsigned long code;
+			int ret;
+			ret = kstrtoul(cmd + 4, 16, &code);
+			if (!ret)
+				__raw_writel(0x6f656d00 | (code & 0xff),
+					     restart_reason);
+		} else if (!strncmp(cmd, "edl", 3)) {
+			enable_emergency_dload_mode();
+		} else if (!strncmp(cmd, "rf", 2)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_RF);
+		} else if (!strncmp(cmd, "wlan", 4)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_WLAN);
+		#ifdef USE_MOS_MODE	
+		} else if (!strncmp(cmd, "mos", 3)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_MOS);
+		#endif			   
+		} else if (!strncmp(cmd, "ftm", 3)) {
+			qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_FACTORY);
+		} else if (!strncmp(cmd, "kernel", 6)) {
+			qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_KERNEL);
+        } else if (!strncmp(cmd, "modem", 5)) {
+        	qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_MODEM);
+        } else if (!strncmp(cmd, "android", 7)) {
+        	qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_ANDROID);
+		} else if (!strncmp(cmd, "silence", 7)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_SILENCE);
+		}else if (!strncmp(cmd, "sau", 3)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_SAU);	
+		} else if (!strncmp(cmd, "safe", 4)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_SAFE);
+		} else {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_NORMAL);
+		}
+	}else{
+		qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_NORMAL);
+	}
+/* OPPO 2013.07.09 hewei modify en for restart mode*/
+#endif //VENDOR_EDIT
 
 	flush_cache_all();
 
@@ -579,6 +761,17 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct resource *mem;
 	struct device_node *np;
 	int ret = 0;
+	
+#ifdef CONFIG_OPLUS_FEATURE_QCOM_MINIDUMP_ENHANCE
+#ifdef CONFIG_OPPO_USER_BUILD
+	if (get_eng_version() == AGING)
+		dload_type = SCM_DLOAD_FULLDUMP;
+	else
+		dload_type = SCM_DLOAD_MINIDUMP;
+#else
+		dload_type = SCM_DLOAD_FULLDUMP;
+#endif
+#endif
 
 #ifdef CONFIG_QCOM_DLOAD_MODE
 	if (scm_is_call_available(SCM_SVC_BOOT, SCM_DLOAD_CMD) > 0)
@@ -684,6 +877,11 @@ skip_sysfs_create:
 	if (scm_is_call_available(SCM_SVC_PWR, SCM_IO_DEASSERT_PS_HOLD) > 0)
 		scm_deassert_ps_hold_supported = true;
 
+#ifdef VENDOR_EDIT
+	if(romupdate_minidumpdisable){
+		download_mode = 0;
+	}
+#endif
 	set_dload_mode(download_mode);
 	if (!download_mode)
 		scm_disable_sdi();

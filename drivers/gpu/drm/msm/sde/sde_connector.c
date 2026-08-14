@@ -143,7 +143,11 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	display = (struct dsi_display *) c_conn->display;
 	bl_config = &display->panel->bl_config;
 	props.max_brightness = bl_config->brightness_max_level;
-	props.brightness = bl_config->brightness_max_level;
+#ifndef VENDOR_EDIT
+        props.brightness = bl_config->brightness_max_level;
+#else  /*VENDOR_EDIT*/
+        props.brightness = 400;
+#endif /*VENDOR_EDIT*/
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev,
@@ -512,6 +516,9 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 {
 	struct dsi_display *dsi_display;
 	struct dsi_backlight_config *bl_config;
+#ifdef VENDOR_EDIT
+	struct backlight_device *bd;
+#endif /* VENDOR_EDIT */
 	int rc = 0;
 
 	if (!c_conn) {
@@ -526,6 +533,16 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 			((dsi_display) ? dsi_display->panel : NULL));
 		return -EINVAL;
 	}
+
+#ifdef VENDOR_EDIT
+	bd = c_conn->bl_device;
+	if (!bd) {
+		SDE_ERROR("Invalid params backlight_device null\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&bd->update_lock);
+#endif /* VENDOR_EDIT */
 
 	bl_config = &dsi_display->panel->bl_config;
 
@@ -554,8 +571,142 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 	rc = c_conn->ops.set_backlight(dsi_display, bl_config->bl_level);
 	c_conn->unset_bl_level = 0;
 
+#ifdef VENDOR_EDIT
+	mutex_unlock(&bd->update_lock);
+#endif /* VENDOR_EDIT */
+
 	return rc;
 }
+
+#ifdef VENDOR_EDIT
+extern bool sde_crtc_get_fingerprint_mode(struct drm_crtc_state *crtc_state);
+extern bool sde_crtc_get_fingerprint_pressed(struct drm_crtc_state *crtc_state);
+extern int oppo_display_get_hbm_mode(void);
+extern int sde_crtc_set_onscreenfinger_defer_sync(struct drm_crtc_state *crtc_state, bool defer_sync);
+extern int oppo_dimlayer_bl;
+extern int oppo_dimlayer_bl_enable_real;
+extern int oppo_dimlayer_bl_enable;
+extern int oppo_dimlayer_bl_enabled;
+extern int oppo_dimlayer_bl_delay;
+extern int oppo_dimlayer_bl_delay_after;
+
+int sde_connector_update_backlight(struct drm_connector *connector)
+{
+	if (oppo_dimlayer_bl != oppo_dimlayer_bl_enabled) {
+		struct sde_connector *c_conn = to_sde_connector(connector);
+
+		oppo_dimlayer_bl_enabled = oppo_dimlayer_bl;
+		//usleep_range(oppo_dimlayer_bl_delay, oppo_dimlayer_bl_delay + 100);removed delay for FindX
+		_sde_connector_update_bl_scale(c_conn);
+		//usleep_range(oppo_dimlayer_bl_delay_after, oppo_dimlayer_bl_delay_after + 100); removed delay for FindX
+	}
+
+	return 0;
+}
+
+int sde_connector_update_hbm(struct drm_connector *connector)
+{
+	struct sde_connector *c_conn = to_sde_connector(connector);
+	struct dsi_display *dsi_display;
+	struct sde_connector_state *c_state;
+	int rc = 0;
+	int fingerprint_mode;
+
+	if (!c_conn) {
+		SDE_ERROR("Invalid params sde_connector null\n");
+		return -EINVAL;
+	}
+
+	if (c_conn->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return 0;
+
+	c_state = to_sde_connector_state(connector->state);
+
+	dsi_display = c_conn->display;
+	if (!dsi_display || !dsi_display->panel) {
+		SDE_ERROR("Invalid params(s) dsi_display %pK, panel %pK\n",
+			dsi_display,
+			((dsi_display) ? dsi_display->panel : NULL));
+		return -EINVAL;
+	}
+
+	if (!c_conn->encoder || !c_conn->encoder->crtc ||
+	    !c_conn->encoder->crtc->state) {
+		return 0;
+	}
+
+	fingerprint_mode = sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state);
+	if (OPPO_DISPLAY_AOD_SCENE == get_oppo_display_scene()) {
+		if (sde_crtc_get_fingerprint_pressed(c_conn->encoder->crtc->state)) {
+			sde_crtc_set_onscreenfinger_defer_sync(c_conn->encoder->crtc->state, true);
+		} else {
+			sde_crtc_set_onscreenfinger_defer_sync(c_conn->encoder->crtc->state, false);
+			fingerprint_mode = false;
+		}
+	} else {
+		sde_crtc_set_onscreenfinger_defer_sync(c_conn->encoder->crtc->state, false);
+	}
+
+	if (fingerprint_mode != dsi_display->panel->is_hbm_enabled) {
+		//struct drm_encoder *drm_enc = c_conn->encoder;
+
+		pr_err("OnscreenFingerprint mode: %s",
+		       fingerprint_mode ? "Enter" : "Exit");
+
+		dsi_display->panel->is_hbm_enabled = fingerprint_mode;
+		if (fingerprint_mode) {
+			mutex_lock(&dsi_display->panel->panel_lock);
+
+			if (OPPO_DISPLAY_AOD_SCENE != get_oppo_display_scene() &&
+			    dsi_display->panel->bl_config.bl_level) {
+				//sde_encoder_poll_line_counts(drm_enc);
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_HBM_ON);
+			} else {
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_ON);
+			}
+
+			mutex_unlock(&dsi_display->panel->panel_lock);
+			if (rc) {
+				pr_err("failed to send DSI_CMD_HBM_ON cmds, rc=%d\n", rc);
+				return rc;
+			}
+		} else {
+			_sde_connector_update_bl_scale(c_conn);
+
+			mutex_lock(&dsi_display->panel->panel_lock);
+
+			//sde_encoder_poll_line_counts(drm_enc);
+			if(OPPO_DISPLAY_AOD_HBM_SCENE == get_oppo_display_scene()) {
+				if (OPPO_DISPLAY_POWER_DOZE_SUSPEND == get_oppo_display_power_status() ||
+				    OPPO_DISPLAY_POWER_DOZE == get_oppo_display_power_status()) {
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_OFF);
+					set_oppo_display_scene(OPPO_DISPLAY_AOD_SCENE);
+				} else {
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_NOLP);
+					/* set nolp would exit hbm, restore when panel status on hbm */
+					if (oppo_display_get_hbm_mode())
+						rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_ON);
+					set_oppo_display_scene(OPPO_DISPLAY_NORMAL_SCENE);
+				}
+			} else if (oppo_display_get_hbm_mode()) {
+				/* Do nothing to skip hbm off */
+			} else if(OPPO_DISPLAY_AOD_SCENE == get_oppo_display_scene()) {
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_HBM_OFF);
+			} else {
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_HBM_OFF);
+			}
+
+			mutex_unlock(&dsi_display->panel->panel_lock);
+			if (rc) {
+				pr_err("failed to send DSI_CMD_HBM_OFF cmds, rc=%d\n", rc);
+				return rc;
+			}
+		}
+	}
+
+	return 0;
+}
+#endif
 
 static int _sde_connector_update_dirty_properties(
 				struct drm_connector *connector)
@@ -2398,6 +2549,24 @@ error_free_conn:
 	return ERR_PTR(rc);
 }
 
+#ifdef VENDOR_EDIT
+static int sde_conn_hw_recovery_handler(struct drm_connector *connector, bool val)
+{
+	struct sde_connector *c_conn;
+
+	if (!connector) {
+		SDE_ERROR("invalid connector\n");
+		return -EINVAL;
+	}
+	c_conn = to_sde_connector(connector);
+
+	if (c_conn->encoder)
+		sde_encoder_recovery_events_handler(c_conn->encoder, val);
+
+	return 0;
+}
+#endif /*VENDOR_EDIT*/
+
 int sde_connector_register_custom_event(struct sde_kms *kms,
 		struct drm_connector *conn_drm, u32 event, bool val)
 {
@@ -2410,8 +2579,56 @@ int sde_connector_register_custom_event(struct sde_kms *kms,
 	case DRM_EVENT_PANEL_DEAD:
 		ret = 0;
 		break;
+#ifdef VENDOR_EDIT
+	case DRM_EVENT_SDE_HW_RECOVERY:
+		ret = sde_conn_hw_recovery_handler(conn_drm, val);
+		break;
+#endif /*VENDOR_EDIT*/
 	default:
 		break;
 	}
 	return ret;
 }
+
+#ifdef VENDOR_EDIT
+/**
+ * sde_connector_event_notify - signal hw recovery event to client
+ * @connector: pointer to connejctor
+ * @type:     event type
+ * @len:     length of the value of the event
+ * @val:     value
+ */
+
+int sde_connector_event_notify(struct drm_connector *connector, uint32_t type,
+		uint32_t len, uint32_t val)
+{
+	struct drm_event event;
+	int ret;
+
+	if (!connector) {
+		SDE_ERROR("invalid connector\n");
+		return -EINVAL;
+	}
+
+	switch (type) {
+		case DRM_EVENT_SYS_BACKLIGHT:
+		case DRM_EVENT_PANEL_DEAD:
+		case DRM_EVENT_SDE_HW_RECOVERY:
+			ret = 0;
+			break;
+		default:
+			SDE_ERROR("connector %d, Unsupported event %d\n",
+					connector->base.id, type);
+			return -EINVAL;
+	}
+
+	event.type = type;
+	event.length = len;
+	msm_mode_object_event_notify(&connector->base, connector->dev, &event,
+			(u8 *)&val);
+
+	SDE_DEBUG("connector:%d hw recovery event(%d) value (%d) notified\n",
+			connector->base.id, type, val);
+	return ret;
+}
+#endif /*VENDOR_EDIT*/

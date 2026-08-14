@@ -180,7 +180,11 @@ struct smb2 {
 	bool			bad_part;
 };
 
+#ifndef VENDOR_EDIT
+static int __debug_mask = PR_MISC | PR_OTG | PR_INTERRUPT | PR_REGISTER;
+#else
 static int __debug_mask;
+#endif
 module_param_named(
 	debug_mask, __debug_mask, int, 0600
 );

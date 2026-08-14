@@ -446,4 +446,13 @@ struct sde_drm_roi_v1 {
 #define SDE_MODE_DPMS_SUSPEND	4
 #define SDE_MODE_DPMS_OFF	5
 
+#ifdef VENDOR_EDIT
+/**
+ * sde recovery severity level
+ */
+#define SDE_RECOVERY_SUCCESS		0
+#define SDE_RECOVERY_CAPTURE		1
+#define SDE_RECOVERY_HARD_RESET		2
+#endif /*VENDOR_EDIT*/
+
 #endif /* _SDE_DRM_H_ */

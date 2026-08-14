@@ -226,6 +226,10 @@ source "drivers/input/serio/Kconfig"
 
 source "drivers/input/gameport/Kconfig"
 
+#ifdef OPLUS_FEATURE_FACERECOGNITION
+source "drivers/input/oppo_face_drivers/Kconfig"
+#endif
+
 endmenu
 
 endmenu

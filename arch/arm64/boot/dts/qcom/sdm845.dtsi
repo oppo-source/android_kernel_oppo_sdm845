@@ -1818,6 +1818,7 @@
 	qcom,msm_fastrpc {
 		compatible = "qcom,msm-fastrpc-compute";
 		qcom,rpc-latency-us = <611>;
+		qcom,secure-domains = <0x0F>;
 
 		qcom,msm_fastrpc_compute_cb1 {
 			compatible = "qcom,msm-fastrpc-compute-cb";
@@ -2655,6 +2656,18 @@
 		qcom,client-id = <0x00000001>;
 		qcom,guard-memory;
 	};
+
+    //#ifdef VENDOR_EDIT
+    //#ifdef FEATURE_OPPO_NV_BACKUP
+    //add for creating a shared memory with uio for nv backup and restore
+    qcom,oembackup_sharedmem@0 {
+        compatible = "qcom,sharedmem-uio";
+        reg = <0x0 0x00100000>;
+        reg-names = "oembackup";
+        qcom,client-id = <0x00000004>;
+    };
+    //#endif /* FEATURE_OPPO_NV_BACKUP */
+    //#endif /* VENDOR_EDIT */
 
 	qcom,rmnet-ipa {
 		compatible = "qcom,rmnet-ipa3";

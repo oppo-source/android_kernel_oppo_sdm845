@@ -310,4 +310,7 @@ endif # NETWORK_FILESYSTEMS
 source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
 
+#ifdef VENDOR_EDIT
+source "fs/exfat/Kconfig"
+#endif /*VENDOR_EDIT*/
 endmenu

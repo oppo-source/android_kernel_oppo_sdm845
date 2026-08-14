@@ -34,3 +34,8 @@ obj-$(CONFIG_RMI4_CORE)		+= rmi4/
 obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
 obj-$(CONFIG_INPUT_KEYCOMBO)	+= keycombo.o
 obj-$(CONFIG_SMI130)   += sensors/smi130/
+
+#ifdef OPLUS_FEATURE_FACERECOGNITION
+obj-$(CONFIG_OPPO_3D_FACE)  += oppo_face_drivers/
+obj-$(CONFIG_OPPO_3D_FACE)  += oppo_seccommon_drivers/
+#endif /* OPLUS_FEATURE_FACERECOGNITION */

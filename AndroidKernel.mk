@@ -102,6 +102,13 @@ else
     KERNEL_VM_OUT := $(TARGET_OUT_INTERMEDIATES)/KERNEL_VM_OBJ
 endif
 
+$(warning "AGING_VERSION_DEBUG = " $(AGING_VERSION_DEBUG))
+$(warning "path = " $(shell pwd)/$(TARGET_KERNEL_SOURCE)/arch/$(KERNEL_ARCH)/configs/$(KERNEL_DEFCONFIG))
+ifeq ($(AGING_VERSION_DEBUG),true)
+$(shell echo "CONFIG_QCOM_RTB=y" >> $(shell pwd)/$(TARGET_KERNEL_SOURCE)/arch/$(KERNEL_ARCH)/configs/$(KERNEL_DEFCONFIG))
+$(shell echo "CONFIG_QCOM_RTB_SEPARATE_CPUS=y" >> $(shell pwd)/$(TARGET_KERNEL_SOURCE)/arch/$(KERNEL_ARCH)/configs/$(KERNEL_DEFCONFIG))
+endif
+
 KERNEL_CONFIG := $(KERNEL_OUT)/.config
 
 ifeq ($(KERNEL_DEFCONFIG)$(wildcard $(KERNEL_CONFIG)),)

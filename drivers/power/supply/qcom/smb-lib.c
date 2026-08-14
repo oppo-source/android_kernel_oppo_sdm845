@@ -29,6 +29,17 @@
 	pr_err("%s: %s: " fmt, chg->name,	\
 		__func__, ##__VA_ARGS__)	\
 
+#ifndef VENDOR_EDIT
+#define smblib_dbg(chg, reason, fmt, ...)			\
+	do {							\
+		if (*chg->debug_mask & (reason))		\
+			pr_err("%s: %s: " fmt, chg->name,	\
+				__func__, ##__VA_ARGS__);	\
+		else						\
+			pr_debug("%s: %s: " fmt, chg->name,	\
+				__func__, ##__VA_ARGS__);	\
+	} while (0)
+#else
 #define smblib_dbg(chg, reason, fmt, ...)			\
 	do {							\
 		if (*chg->debug_mask & (reason))		\
@@ -38,6 +49,7 @@
 			pr_debug("%s: %s: " fmt, chg->name,	\
 				__func__, ##__VA_ARGS__);	\
 	} while (0)
+#endif
 
 static bool is_secure(struct smb_charger *chg, int addr)
 {
@@ -249,7 +261,11 @@ static const struct apsd_result const smblib_apsd_results[] = {
 	[FLOAT] = {
 		.name	= "FLOAT",
 		.bit	= FLOAT_CHARGER_BIT,
+#ifndef VENDOR_EDIT
 		.pst	= POWER_SUPPLY_TYPE_USB_FLOAT
+#else
+		.pst	= POWER_SUPPLY_TYPE_USB_DCP
+#endif
 	},
 	[HVDCP2] = {
 		.name	= "HVDCP2",
@@ -294,8 +310,13 @@ static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
 
 	if (apsd_stat & QC_CHARGER_BIT) {
 		/* since its a qc_charger, either return HVDCP3 or HVDCP2 */
+#ifndef VENDOR_EDIT
 		if (result != &smblib_apsd_results[HVDCP3])
 			result = &smblib_apsd_results[HVDCP2];
+#else
+		if (result != &smblib_apsd_results[HVDCP3] && result->bit == (DCP_CHARGER_BIT | QC_2P0_BIT))
+			result = &smblib_apsd_results[HVDCP2];
+#endif
 	}
 
 	return result;
@@ -3387,7 +3408,11 @@ irqreturn_t smblib_handle_debug(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
 
+#ifndef VENDOR_EDIT
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+#else
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s, DEBUG\n", irq_data->name);
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -3564,6 +3589,10 @@ void smblib_usb_plugin_hard_reset_locked(struct smb_charger *chg)
 
 	vbus_rising = (bool)(stat & USBIN_PLUGIN_RT_STS_BIT);
 
+#ifdef VENDOR_EDIT
+	printk(KERN_ERR "!!!!! smblib_usb_plugin_hard_reset_locked: [%d]\n", vbus_rising);
+#endif
+
 	if (vbus_rising) {
 		/* Remove FCC_STEPPER 1.5A init vote to allow FCC ramp up */
 		if (chg->fcc_stepper_enable)
@@ -3614,6 +3643,10 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 	vbus_rising = (bool)(stat & USBIN_PLUGIN_RT_STS_BIT);
 	smblib_set_opt_freq_buck(chg, vbus_rising ? chg->chg_freq.freq_5V :
 						chg->chg_freq.freq_removal);
+
+#ifdef VENDOR_EDIT
+	printk(KERN_ERR "!!!!! smblib_usb_plugin_locked: [%d]\n", vbus_rising);
+#endif
 
 	if (vbus_rising) {
 		if (smblib_get_prop_dfp_mode(chg) != POWER_SUPPLY_TYPEC_NONE) {
@@ -4026,7 +4059,9 @@ static void smblib_handle_apsd_done(struct smb_charger *chg, bool rising)
 	default:
 		break;
 	}
-
+#ifdef VENDOR_EDIT
+	printk(KERN_ERR "!!!IRQ: apsd-done rising; %s detected\n", apsd_result->name);
+#endif
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: apsd-done rising; %s detected\n",
 		   apsd_result->name);
 }
@@ -4522,6 +4557,9 @@ static void smblib_handle_rp_change(struct smb_charger *chg, int typec_mode)
 static void smblib_handle_typec_cc_state_change(struct smb_charger *chg)
 {
 	int typec_mode;
+#ifdef VENDOR_EDIT
+	static bool dfp_status = 0;
+#endif
 
 	if (chg->pr_swap_in_progress)
 		return;
@@ -4543,6 +4581,13 @@ static void smblib_handle_typec_cc_state_change(struct smb_charger *chg)
 		smblib_dbg(chg, PR_MISC, "TypeC removal\n");
 		smblib_handle_typec_removal(chg);
 	}
+
+#ifdef VENDOR_EDIT
+	if (dfp_status ^ (chg->typec_mode == POWER_SUPPLY_TYPEC_SINK)) {
+		dfp_status = (chg->typec_mode == POWER_SUPPLY_TYPEC_SINK);
+		printk(KERN_ERR "!!!!! smblib_handle_typec_cc_state_change: [%d]\n", dfp_status);
+	}
+#endif
 
 	/* suspend usb if sink */
 	if ((chg->typec_status[3] & UFP_DFP_MODE_STATUS_BIT)
@@ -4766,6 +4811,9 @@ static void smblib_uusb_otg_work(struct work_struct *work)
 	int rc;
 	u8 stat;
 	bool otg;
+#ifdef VENDOR_EDIT
+	static bool otg_status = 0;
+#endif
 
 	rc = smblib_read(chg, TYPE_C_STATUS_3_REG, &stat);
 	if (rc < 0) {
@@ -4774,6 +4822,12 @@ static void smblib_uusb_otg_work(struct work_struct *work)
 	}
 
 	otg = !!(stat & (U_USB_GND_NOVBUS_BIT | U_USB_GND_BIT));
+#ifdef VENDOR_EDIT
+	if (otg_status ^ otg) {
+		otg_status = otg;
+		printk(KERN_ERR "!!!!! smblib_handle_usb_typec_change_for_uusb: [%d]\n", otg_status);
+	}
+#endif
 	extcon_set_cable_state_(chg->extcon, EXTCON_USB_HOST, otg);
 	smblib_dbg(chg, PR_REGISTER, "TYPE_C_STATUS_3 = 0x%02x OTG=%d\n",
 			stat, otg);

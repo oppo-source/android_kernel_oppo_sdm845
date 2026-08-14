@@ -116,6 +116,9 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_PREFILL_TIME,
 	PLANE_PROP_SCALER_V1,
 	PLANE_PROP_SCALER_V2,
+#ifdef VENDOR_EDIT
+	PLANE_PROP_CUSTOM,
+#endif /* VENDOR_EDIT */
 
 	/* enum/bitmask properties */
 	PLANE_PROP_ROTATION,

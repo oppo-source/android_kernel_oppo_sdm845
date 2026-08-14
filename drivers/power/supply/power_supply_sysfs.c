@@ -146,6 +146,12 @@ static ssize_t power_supply_show_property(struct device *dev,
 	if (off == POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT)
 		return scnprintf(buf, PAGE_SIZE, "%lld\n",
 				value.int64val);
+#ifdef VENDOR_EDIT
+/* Yichun.Chen	PSW.BSP.CHG  2019-03-04  17127 for feedback vbus */
+	else if (off == POWER_SUPPLY_PROP_VBUS_FEEDBACK)
+		return scnprintf(buf, PAGE_SIZE, "%lld\n",
+				value.int64val);
+#endif
 	else
 		return scnprintf(buf, PAGE_SIZE, "%d\n",
 				value.intval);
@@ -177,6 +183,27 @@ static ssize_t power_supply_store_property(struct device *dev,
 /* Must be in the same order as POWER_SUPPLY_PROP_* */
 static struct device_attribute power_supply_attrs[] = {
 	/* Properties of type `int' */
+#ifdef VENDOR_EDIT
+	POWER_SUPPLY_ATTR(charge_technology),
+	POWER_SUPPLY_ATTR(fastcharger),
+	POWER_SUPPLY_ATTR(mmi_charging_enable),
+	POWER_SUPPLY_ATTR(otg_switch),
+	POWER_SUPPLY_ATTR(otg_online),
+    POWER_SUPPLY_ATTR(fast_chg_type),
+	POWER_SUPPLY_ATTR(batt_fcc),
+	POWER_SUPPLY_ATTR(batt_soh),
+	POWER_SUPPLY_ATTR(batt_cc),
+	POWER_SUPPLY_ATTR(batt_rm),
+	POWER_SUPPLY_ATTR(batt_soc),
+	POWER_SUPPLY_ATTR(authenticate),
+	POWER_SUPPLY_ATTR(charge_timeout),
+	POWER_SUPPLY_ATTR(notify_code),
+	POWER_SUPPLY_ATTR(usb_status),
+#endif  /* VENDOR_EDIT */
+#ifdef VENDOR_EDIT
+/* Yichun.Chen	PSW.BSP.CHG  2019-03-04  17127 for feedback vbus */
+	POWER_SUPPLY_ATTR(vbus_feedback),
+#endif
 	POWER_SUPPLY_ATTR(status),
 	POWER_SUPPLY_ATTR(charge_type),
 	POWER_SUPPLY_ATTR(health),
@@ -346,6 +373,26 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(real_capacity),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
+#ifdef VENDOR_EDIT
+	POWER_SUPPLY_ATTR(adapter_fw_update),
+	POWER_SUPPLY_ATTR(voocchg_ing),
+	POWER_SUPPLY_ATTR(chargerid_volt),
+	POWER_SUPPLY_ATTR(ship_mode),
+#ifdef CONFIG_OPLUS_SHORT_USERSPACE
+	POWER_SUPPLY_ATTR(short_c_batt_limit_chg),
+	POWER_SUPPLY_ATTR(short_c_batt_limit_rechg),
+#else
+	POWER_SUPPLY_ATTR(short_c_batt_update_change),
+	POWER_SUPPLY_ATTR(short_c_batt_in_idle),
+	POWER_SUPPLY_ATTR(short_c_batt_cv_status),
+#endif /*CONFIG_OPLUS_SHORT_USERSPACE*/
+#endif /* VENDOR_EDIT */
+#ifdef VENDOR_EDIT
+#ifdef CONFIG_OPLUS_SHORT_HW_CHECK
+	POWER_SUPPLY_ATTR(short_c_hw_feature),
+	POWER_SUPPLY_ATTR(short_c_hw_status),
+#endif
+#endif /*VENDOR_EDIT*/
 	/* Properties of type `const char *' */
 	POWER_SUPPLY_ATTR(model_name),
 	POWER_SUPPLY_ATTR(manufacturer),
@@ -428,10 +475,12 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 	char *prop_buf;
 	char *attrname;
 
+	dev_dbg(dev, "uevent\n");
 	if (!psy || !psy->desc) {
 		dev_dbg(dev, "No power supply yet\n");
 		return ret;
 	}
+	dev_dbg(dev, "POWER_SUPPLY_NAME=%s\n", psy->desc->name);
 
 	ret = add_uevent_var(env, "POWER_SUPPLY_NAME=%s", psy->desc->name);
 	if (ret)
@@ -468,6 +517,7 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 			goto out;
 		}
 
+		dev_dbg(dev, "prop %s=%s\n", attrname, prop_buf);
 		ret = add_uevent_var(env, "POWER_SUPPLY_%s=%s", attrname, prop_buf);
 		kfree(attrname);
 		if (ret)

@@ -3,6 +3,9 @@
 #include <linux/utsname.h>
 #include <linux/freezer.h>
 #include <linux/compiler.h>
+//#ifdef OPLUS_BUG_STABILITY
+#include <linux/syscalls.h>
+//#endif
 
 struct swsusp_info {
 	struct new_utsname	uts;
@@ -271,6 +274,9 @@ static inline void suspend_thaw_processes(void)
 #else
 static inline int suspend_freeze_processes(void)
 {
+//#ifdef OPLUS_BUG_STABILITY
+	sys_sync();
+//#endif
 	return 0;
 }
 

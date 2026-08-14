@@ -107,6 +107,12 @@ struct ion_buffer {
 	struct sg_table *sg_table;
 	struct page **pages;
 	struct list_head vmas;
+#if defined(VENDOR_EDIT) && defined(CONFIG_DUMP_TASKS_MEM)
+	struct task_struct *tsk;
+#endif
+#if defined(VENDOR_EDIT) && defined(CONFIG_MEMLEAK_DETECT_THREAD) && defined(CONFIG_OPPO_SVELTE)
+	unsigned long jiffies;
+#endif
 	/* used to track orphaned buffers */
 	int handle_count;
 	char task_comm[TASK_COMM_LEN];

@@ -16,3 +16,8 @@ obj-$(CONFIG_ARCH_TEGRA)	+= tegra/
 obj-$(CONFIG_SOC_TI)		+= ti/
 obj-$(CONFIG_ARCH_U8500)	+= ux500/
 obj-$(CONFIG_PLAT_VERSATILE)	+= versatile/
+obj-$(CONFIG_OPPO_ARCH_FILE)	+= oppo/
+obj-y                           += oplus/
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
+obj-$(CONFIG_OPLUS_WAKELOCK_PROFILER) += oplus/owakelock/
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */

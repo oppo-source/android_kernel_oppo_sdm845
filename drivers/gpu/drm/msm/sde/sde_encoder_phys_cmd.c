@@ -465,18 +465,30 @@ static bool _sde_encoder_phys_is_ppsplit(struct sde_encoder_phys *phys_enc)
 
 	return false;
 }
-
+#ifndef VENDOR_EDIT
 static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 		struct sde_encoder_phys *phys_enc)
+#else
+static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
+		struct sde_encoder_phys *phys_enc,
+		bool recovery_events)
+#endif /*VENDOR_EDIT*/
 {
 	struct sde_encoder_phys_cmd *cmd_enc =
 			to_sde_encoder_phys_cmd(phys_enc);
 	u32 frame_event = SDE_ENCODER_FRAME_EVENT_ERROR
 				| SDE_ENCODER_FRAME_EVENT_SIGNAL_RELEASE_FENCE;
 
+#ifdef VENDOR_EDIT
+	struct drm_connector *conn;
+#endif /*VENDOR_EDIT*/
+
 	if (!phys_enc || !phys_enc->hw_pp || !phys_enc->hw_ctl)
 		return -EINVAL;
 
+#ifdef VENDOR_EDIT
+	conn = phys_enc->connector;
+#endif /*VENDOR_EDIT*/
 	cmd_enc->pp_timeout_report_cnt++;
 
 	if (sde_encoder_phys_cmd_is_master(phys_enc)) {
@@ -499,12 +511,16 @@ static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 	if (sde_connector_esd_status(phys_enc->connector))
 		goto exit;
 
+#ifndef VENDOR_EDIT
 	if (cmd_enc->pp_timeout_report_cnt >= PP_TIMEOUT_MAX_TRIALS) {
 		cmd_enc->pp_timeout_report_cnt = PP_TIMEOUT_MAX_TRIALS;
 		frame_event |= SDE_ENCODER_FRAME_EVENT_PANEL_DEAD;
 
 		SDE_DBG_DUMP("panic");
 	} else if (cmd_enc->pp_timeout_report_cnt == 1) {
+#else
+	if (cmd_enc->pp_timeout_report_cnt == 1) {
+#endif /*VENDOR_EDIT*/
 		/* to avoid flooding, only log first time, and "dead" time */
 		SDE_ERROR_CMDENC(cmd_enc,
 				"pp:%d kickoff timed out ctl %d cnt %d koff_cnt %d\n",
@@ -514,6 +530,30 @@ static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 				atomic_read(&phys_enc->pending_kickoff_cnt));
 
 		SDE_EVT32(DRMID(phys_enc->parent), SDE_EVTLOG_FATAL);
+#ifdef VENDOR_EDIT
+		sde_encoder_helper_unregister_irq(phys_enc, INTR_IDX_RDPTR);
+		SDE_DBG_DUMP("all", "dbg_bus", "vbif_dbg_bus");
+		sde_encoder_helper_register_irq(phys_enc, INTR_IDX_RDPTR);
+	}
+	if (recovery_events) {
+		/**
+		 * if the recovery event is registered by user,
+		 * driver does not panic on its own for any PP_TIMEOUTS
+		 * driver collects the debug information on first timeout event
+		 * and sends the timeout event on the current and
+		 * subsequent consecutive timeouts
+		 */
+		sde_connector_event_notify(conn, DRM_EVENT_SDE_HW_RECOVERY,
+				sizeof(uint8_t),
+				SDE_RECOVERY_CAPTURE);
+	} else if (cmd_enc->pp_timeout_report_cnt >= PP_TIMEOUT_MAX_TRIALS) {
+		cmd_enc->pp_timeout_report_cnt = PP_TIMEOUT_MAX_TRIALS;
+		frame_event |= SDE_ENCODER_FRAME_EVENT_PANEL_DEAD;
+
+		sde_encoder_helper_unregister_irq(phys_enc, INTR_IDX_RDPTR);
+		SDE_DBG_DUMP("panic");
+		sde_encoder_helper_register_irq(phys_enc, INTR_IDX_RDPTR);
+#endif /*VENDOR_EDIT*/
 	}
 
 	/* request a ctl reset before the next kickoff */
@@ -627,6 +667,9 @@ static int _sde_encoder_phys_cmd_wait_for_idle(
 	struct sde_encoder_phys_cmd *cmd_enc =
 			to_sde_encoder_phys_cmd(phys_enc);
 	struct sde_encoder_wait_info wait_info;
+#ifdef VENDOR_EDIT
+	bool recovery_events;
+#endif /*VENDOR_EDIT*/
 	int ret;
 
 	if (!phys_enc) {
@@ -638,17 +681,38 @@ static int _sde_encoder_phys_cmd_wait_for_idle(
 	wait_info.atomic_cnt = &phys_enc->pending_kickoff_cnt;
 	wait_info.timeout_ms = KICKOFF_TIMEOUT_MS;
 
+#ifdef VENDOR_EDIT
+	recovery_events = sde_encoder_recovery_events_enabled(
+			phys_enc->parent);
+#endif /*VENDOR_EDIT*/
+
 	/* slave encoder doesn't enable for ppsplit */
 	if (_sde_encoder_phys_is_ppsplit_slave(phys_enc))
 		return 0;
 
 	ret = sde_encoder_helper_wait_for_irq(phys_enc, INTR_IDX_PINGPONG,
 			&wait_info);
+
+#ifndef VENDOR_EDIT
 	if (ret == -ETIMEDOUT)
 		_sde_encoder_phys_cmd_handle_ppdone_timeout(phys_enc);
 	else if (!ret)
 		cmd_enc->pp_timeout_report_cnt = 0;
-
+#else
+	if (ret == -ETIMEDOUT) {
+		_sde_encoder_phys_cmd_handle_ppdone_timeout(phys_enc,
+				recovery_events);
+	} else if (!ret) {
+		if (cmd_enc->pp_timeout_report_cnt && recovery_events) {
+			struct drm_connector *conn = phys_enc->connector;
+			sde_connector_event_notify(conn,
+					DRM_EVENT_SDE_HW_RECOVERY,
+					sizeof(uint8_t),
+					SDE_RECOVERY_SUCCESS);
+		}
+		cmd_enc->pp_timeout_report_cnt = 0;
+	}
+#endif /*VENDOR_EDIT*/
 	return ret;
 }
 

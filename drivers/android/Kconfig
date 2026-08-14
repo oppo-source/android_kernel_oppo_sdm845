@@ -54,6 +54,13 @@ config ANDROID_BINDER_IPC_SELFTEST
 	  exhaustively with combinations of various buffer sizes and
 	  alignments.
 
+#ifdef OPLUS_FEATURE_HANS_FREEZE
+config OPPO_HANS
+        bool "HANS kernel and HANS native communication channel"
+        default y if OPLUS_FEATURE_HANS_FREEZE
+        ---help---
+          Key events (signal/network package/binder) report to HAS native.
+#endif /*OPLUS_FEATURE_HANS_FREEZE*/
 endif # if ANDROID
 
 endmenu

@@ -92,6 +92,12 @@ static int lmk_fast_run = 1;
 
 static unsigned long lowmem_deathpending_timeout;
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+static unsigned int almk_totalram_ratio = 6;
+static unsigned int almk_totalram_threshold_pages = 230440;
+module_param_named(almk_totalram_ratio, almk_totalram_ratio, uint, 0644);
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
+
 #ifdef CONFIG_ANDROID_LMK_NOTIFY_TRIGGER
 static struct shrink_control lowmem_notif_sc = {GFP_KERNEL, 0};
 static int lowmem_minfree_notif_trigger;
@@ -313,8 +319,14 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
 		other_free = global_page_state(NR_FREE_PAGES);
-
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+	if (other_file < almk_totalram_threshold_pages * 6/5) {
+			atomic_set(&shift_adj, 1);
+	}
+#else
 		atomic_set(&shift_adj, 1);
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
+
 		trace_almk_vmpressure(pressure, other_free, other_file);
 	} else if (pressure >= 90) {
 		if (lowmem_adj_size < array_size)
@@ -328,11 +340,17 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 
 		other_free = global_page_state(NR_FREE_PAGES);
 
-		if ((other_free < lowmem_minfree[array_size - 1]) &&
-		    (other_file < vmpressure_file_min)) {
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+		if (other_free < lowmem_minfree[array_size - 1] && other_file < almk_totalram_threshold_pages) {
 			atomic_set(&shift_adj, 1);
 			trace_almk_vmpressure(pressure, other_free, other_file);
 		}
+#else
+		if (other_file < vmpressure_file_min) {
+			atomic_set(&shift_adj, 1);
+			trace_almk_vmpressure(pressure, other_free, other_file);
+		}
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
 	} else if (atomic_read(&shift_adj)) {
 		other_file = global_node_page_state(NR_FILE_PAGES) -
 			global_node_page_state(NR_SHMEM) -
@@ -1008,6 +1026,7 @@ module_param_array_named(adj, lowmem_adj, short, &lowmem_adj_size, 0644);
 module_param_array_named(minfree, lowmem_minfree, uint, &lowmem_minfree_size,
 			 S_IRUGO | S_IWUSR);
 module_param_named(debug_level, lowmem_debug_level, uint, S_IRUGO | S_IWUSR);
+module_param_named(almk_totalram_threshold_pages, almk_totalram_threshold_pages, uint, S_IRUGO | S_IWUSR);
 module_param_named(lmk_fast_run, lmk_fast_run, int, S_IRUGO | S_IWUSR);
 #ifdef CONFIG_ANDROID_LMK_NOTIFY_TRIGGER
 module_param_named(notify_trigger, lowmem_minfree_notif_trigger, uint, 0644);

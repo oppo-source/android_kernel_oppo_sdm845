@@ -856,6 +856,9 @@ source "drivers/misc/genwqe/Kconfig"
 source "drivers/misc/echo/Kconfig"
 source "drivers/misc/cxl/Kconfig"
 source "drivers/misc/fpr_FingerprintCard/Kconfig"
+#ifdef VENDOR_EDIT
+source "drivers/misc/oppo/Kconfig"
+#endif
 endmenu
 
 config OKL4_LINK_SHBUF

@@ -15,7 +15,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 
+#ifndef OPLUS_FEATURE_POWERINFO_RPMH
 int msm_show_resume_irq_mask;
+#else
+int msm_show_resume_irq_mask = 1;
+#endif /*OPLUS_FEATURE_POWERINFO_RPMH*/
 
 module_param_named(
 	debug_mask, msm_show_resume_irq_mask, int, S_IRUGO | S_IWUSR | S_IWGRP

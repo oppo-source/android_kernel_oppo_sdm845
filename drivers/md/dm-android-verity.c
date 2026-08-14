@@ -304,6 +304,13 @@ static int verify_header(struct android_metadata_header *header)
 {
 	int retval = -EINVAL;
 
+	//#ifdef VENDOR_EDIT
+	if (is_unlocked()) {
+		DMWARN("disable verity when unlocked");
+		return VERITY_STATE_DISABLE;
+	}
+	//#endif/*VENDOR_EDIT*/
+
 	if (is_userdebug() && le32_to_cpu(header->magic_number) ==
 			VERITY_METADATA_MAGIC_DISABLE)
 		return VERITY_STATE_DISABLE;
@@ -505,7 +512,11 @@ static void handle_error(void)
 	int mode = verity_mode();
 	if (mode == DM_VERITY_MODE_RESTART) {
 		DMERR("triggering restart");
+#ifdef OPLUS_BUG_STABILITY
+		panic("dm-verity device corrupted"); 
+#else
 		kernel_restart("dm-verity device corrupted");
+#endif /* OPLUS_BUG_STABILITY */
 	} else {
 		DMERR("Mounting verity root failed");
 	}
@@ -722,6 +733,13 @@ static int android_verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	}
 
 	err = extract_metadata(dev, &fec, &metadata, &verity_enabled);
+
+//#ifdef VENDOR_EDIT
+#ifdef OPPO_BUILD_ROOT_DISABLE_DM_VERITY
+    DMWARN("Allow invalid metadata when build root");
+    return create_linear_device(ti, dev, target_device);
+#endif
+//#endif /* VENDOR_EDIT */
 
 	if (err) {
 		/* Allow invalid metadata when the device is unlocked */

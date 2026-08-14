@@ -931,6 +931,10 @@ static int sde_encoder_phys_vid_prepare_for_kickoff(
 {
 	struct sde_encoder_phys_vid *vid_enc;
 	struct sde_hw_ctl *ctl;
+#ifdef VENDOR_EDIT
+	bool recovery_events;
+	struct drm_connector *conn;
+#endif /*VENDOR_EDIT*/
 	int rc;
 
 	if (!phys_enc || !params || !phys_enc->hw_ctl) {
@@ -942,7 +946,11 @@ static int sde_encoder_phys_vid_prepare_for_kickoff(
 	ctl = phys_enc->hw_ctl;
 	if (!ctl->ops.wait_reset_status)
 		return 0;
-
+#ifdef VENDOR_EDIT
+	conn = phys_enc->connector;
+	recovery_events = sde_encoder_recovery_events_enabled(
+			phys_enc->parent);
+#endif /*VENDOR_EDIT*/
 	/*
 	 * hw supports hardware initiated ctl reset, so before we kickoff a new
 	 * frame, need to check and wait for hw initiated ctl reset completion
@@ -953,17 +961,51 @@ static int sde_encoder_phys_vid_prepare_for_kickoff(
 				ctl->idx, rc);
 
 		++vid_enc->error_count;
+#ifndef VENDOR_EDIT
 		if (vid_enc->error_count >= KICKOFF_MAX_ERRORS) {
+#else
+		if (vid_enc->error_count == 1) {
+			SDE_EVT32(DRMID(phys_enc->parent), SDE_EVTLOG_FATAL);
+
+			sde_encoder_helper_unregister_irq(
+					phys_enc, INTR_IDX_VSYNC);
+			SDE_DBG_DUMP("all", "dbg_bus", "vbif_dbg_bus");
+			sde_encoder_helper_register_irq(
+					phys_enc, INTR_IDX_VSYNC);
+		}
+
+		if (recovery_events) {
+			sde_connector_event_notify(conn, DRM_EVENT_SDE_HW_RECOVERY,
+					sizeof(uint8_t),
+					SDE_RECOVERY_CAPTURE);
+		} else if (vid_enc->error_count >= KICKOFF_MAX_ERRORS) {
+#endif /*VENDOR_EDIT*/
 			vid_enc->error_count = KICKOFF_MAX_ERRORS;
 
+#ifdef VENDOR_EDIT
+			sde_encoder_helper_unregister_irq(
+					phys_enc, INTR_IDX_VSYNC);
+#endif /*VENDOR_EDIT*/
 			SDE_DBG_DUMP("panic");
+
+#ifndef VENDOR_EDIT
 		} else if (vid_enc->error_count == 1) {
 			SDE_EVT32(DRMID(phys_enc->parent), SDE_EVTLOG_FATAL);
+#else
+			sde_encoder_helper_register_irq(
+					phys_enc, INTR_IDX_VSYNC);
+#endif /*VENDOR_EDIT*/
 		}
 
 		/* request a ctl reset before the next flush */
 		phys_enc->enable_state = SDE_ENC_ERR_NEEDS_HW_RESET;
 	} else {
+#ifdef VENDOR_EDIT
+		if (recovery_events && vid_enc->error_count)
+			sde_connector_event_notify(conn, DRM_EVENT_SDE_HW_RECOVERY,
+					sizeof(uint8_t),
+					SDE_RECOVERY_SUCCESS);
+#endif /*VENDOR_EDIT*/
 		vid_enc->error_count = 0;
 	}
 

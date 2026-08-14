@@ -18,6 +18,9 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include "internal.h"
+//#ifdef VENDOR_EDIT
+#include <linux/oplus_healthinfo/ion.h>
+//#endif /*VENDOR_EDIT*/
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
@@ -131,7 +134,11 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Committed_AS:   ", committed);
 	seq_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);
+#if defined(VENDOR_EDIT) && defined(CONFIG_VMALLOC_DEBUG)
+	show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());
+#else
 	show_val_kb(m, "VmallocUsed:    ", 0ul);
+#endif
 	show_val_kb(m, "VmallocChunk:   ", 0ul);
 
 #ifdef CONFIG_MEMORY_FAILURE
@@ -153,6 +160,10 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "CmaFree:        ",
 		    global_page_state(NR_FREE_CMA_PAGES));
 #endif
+#if defined(VENDOR_EDIT) && defined(CONFIG_ION)
+	show_val_kb(m, "IonTotalCache:     ", global_page_state(NR_IONCACHE_PAGES));
+	show_val_kb(m, "IonTotalUsed:      ", ion_total() >> PAGE_SHIFT);
+#endif /*VENDOR_EDIT*/
 
 	hugetlb_report_meminfo(m);
 

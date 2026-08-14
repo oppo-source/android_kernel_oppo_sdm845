@@ -51,6 +51,10 @@
 #include "queue.h"
 #include "block.h"
 
+#ifdef VENDOR_EDIT
+#include <soc/oppo/device_info.h>
+#endif /* VENDOR_EDIT */
+
 MODULE_ALIAS("mmc:block");
 #ifdef MODULE_PARAM_PREFIX
 #undef MODULE_PARAM_PREFIX
@@ -865,7 +869,13 @@ static int __mmc_blk_ioctl_cmd(struct mmc_card *card, struct mmc_blk_data *md,
 	struct mmc_command cmd = {0};
 	struct mmc_data data = {0};
 	struct mmc_request mrq = {NULL};
+#ifndef VENDOR_EDIT
 	struct scatterlist sg;
+#else
+	struct scatterlist sg[16],*isg=0;
+	unsigned int i,sg_len,size;
+	unsigned int item_len = queue_max_segment_size(md->queue.queue);
+#endif
 	int err;
 
 	if (!card || !md || !idata)
@@ -876,8 +886,16 @@ static int __mmc_blk_ioctl_cmd(struct mmc_card *card, struct mmc_blk_data *md,
 	cmd.flags = idata->ic.flags;
 
 	if (idata->buf_bytes) {
+#ifndef VENDOR_EDIT
 		data.sg = &sg;
 		data.sg_len = 1;
+#else
+		sg_len = (idata->buf_bytes+item_len-1)/item_len;
+		pr_err("mmc sg_len:%d\n",sg_len);
+		data.sg = sg;
+		data.sg_len = sg_len;
+
+#endif
 		data.blksz = idata->ic.blksz;
 		data.blocks = idata->ic.blocks;
 
@@ -1554,6 +1572,10 @@ static int card_busy_detect(struct mmc_card *card, unsigned int timeout_ms,
 	int err = 0;
 	u32 status;
 
+#ifdef VENDOR_EDIT
+       char *envp[2] = {"sdcard_ro=1", NULL};
+#endif /* VENDOR_EDIT */
+  
 	do {
 		err = get_card_status(card, &status, 5);
 		if (err) {
@@ -1581,6 +1603,12 @@ static int card_busy_detect(struct mmc_card *card, unsigned int timeout_ms,
 			pr_err("%s: Card stuck in programming state! %s %s\n",
 				mmc_hostname(card->host),
 				req->rq_disk->disk_name, __func__);
+#ifdef VENDOR_EDIT
+			kobject_uevent_env(
+					&(card->dev.kobj),
+					KOBJ_CHANGE, envp);
+			card->host->card_stuck_in_programing_status = true;
+#endif /* VENDOR_EDIT */
 			return -ETIMEDOUT;
 		}
 
@@ -1871,6 +1899,15 @@ int mmc_access_rpmb(struct mmc_queue *mq)
 	if (md && md->part_type == EXT_CSD_PART_CONFIG_ACC_RPMB)
 		return true;
 
+#ifndef VENDOR_EDIT
+		pr_err("mmc __mmc_blk_ioctl_cmd enter cardState 0x%x ,cmdq(%d %d %d) , adma2len %d\n",
+			card->state,
+			card->ext_csd.cmdq_en,
+			card->ext_csd.cmdq_depth,
+			card->ext_csd.cmdq_support,
+			card->host->max_seg_size
+		);
+#endif
 	return false;
 }
 
@@ -4502,6 +4539,18 @@ static int mmc_blk_alloc_part(struct mmc_card *card,
  * For each partition enabled in EXT_CSD a block device will be allocatedi
  * to provide access to the partition.
  */
+ 
+#ifdef VENDOR_EDIT
+char *capacity_string(struct mmc_card *card){
+  static char cap_str[10] = "unknown";
+  struct mmc_blk_data *md = (struct mmc_blk_data *)card->dev.driver_data;
+  if(md==NULL){
+	  return 0;
+  }
+  string_get_size((u64)get_capacity(md->disk), 512, STRING_UNITS_2, cap_str, sizeof(cap_str));
+  return cap_str;
+}
+#endif
 
 static int mmc_blk_alloc_parts(struct mmc_card *card, struct mmc_blk_data *md)
 {
@@ -4776,12 +4825,51 @@ static int mmc_blk_probe(struct mmc_card *card)
 {
 	struct mmc_blk_data *md, *part_md;
 	char cap_str[10];
-
+	#ifdef VENDOR_EDIT
+	char * manufacturerid;
+    static char temp_version[10];
+	#endif /* VENDOR_EDIT */
+	
 	/*
 	 * Check that the card supports the command class(es) we need.
 	 */
+#ifndef VENDOR_EDIT
 	if (!(card->csd.cmdclass & CCC_BLOCK_READ))
 		return -ENODEV;
+#endif
+
+#ifdef VENDOR_EDIT
+	switch (card->cid.manfid) {
+		case  0x11:
+			manufacturerid = "TOSHIBA";
+			break;
+		case  0x15:
+			manufacturerid = "SAMSUNG";
+			break;
+		case  0x45:
+			manufacturerid = "SANDISK";
+			break;
+		case  0x90:
+			manufacturerid = "HYNIX";
+			break;
+		case 0xFE:
+            manufacturerid = "ELPIDA";
+            break;
+		case 0x13:
+            manufacturerid = "MICRON";
+            break;
+        default:
+			printk("mmc_blk_probe unknown card->cid.manfid is %x\n",card->cid.manfid);
+			manufacturerid = "unknown";
+			break;
+	}
+
+	if ((!strcmp(mmc_card_id(card), "mmc0:0001"))&&(!mmc_card_is_removable(card->host))) {
+		sprintf(temp_version,"0x%x",card->ext_csd.fw_version);
+		register_device_proc("emmc", mmc_card_name(card), manufacturerid);
+		register_device_proc("emmc_version", mmc_card_name(card), temp_version);
+	}
+#endif
 
 	mmc_fixup_device(card, blk_fixups);
 

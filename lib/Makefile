@@ -240,3 +240,9 @@ CFLAGS_ubsan.o := $(call cc-option, -fno-stack-protector) $(DISABLE_STACKLEAK_PL
 
 obj-$(CONFIG_SBITMAP) += sbitmap.o
 obj-$(CONFIG_QMI_ENCDEC) += qmi_encdec.o
+
+# ifdef CONFIG_VMALLOC_DEBUG
+obj-$(CONFIG_VMALLOC_DEBUG) += memleak_debug_stackdepot.o
+KASAN_SANITIZE_memleak_debug_stackdepot.o := n
+KCOV_INSTRUMENT_memleak_debug_stackdepot.o := n
+# endif

@@ -2,3 +2,58 @@ source "drivers/power/avs/Kconfig"
 source "drivers/power/reset/Kconfig"
 source "drivers/power/supply/Kconfig"
 source "drivers/power/qcom/Kconfig"
+
+#ifdef VENDOR_EDIT
+config OPLUS_SDM845_CHARGER
+	tristate "OPLUS SDM845 charger driver"
+	depends on MFD_SPMI_PMIC
+	help
+	  Enables support for the oppo charging framework
+
+config OPLUS_SDM845P_CHARGER
+	tristate "OPLUS SDM845 charger driver"
+	depends on MFD_SPMI_PMIC
+	help
+	  Enables support for the oppo charging framework
+config OPLUS_SDM845_Q_CHARGER
+	tristate "OPLUS SDM845 Q charger driver"
+	depends on MFD_SPMI_PMIC
+	help
+	  Enables support for the oppo Q charging framework
+config OPLUS_SHORT_C_BATT_CHECK
+	tristate "OPLUS_SHORT_C_BATT CHECK SUPPORT"
+	default n
+	depends on MFD_SPMI_PMIC
+	help
+	  Say Y to include support
+
+config OPLUS_RTC_DET_SUPPORT
+	tristate "OPLUS RTC DET SUPPORT"
+	default n
+	depends on MFD_SPMI_PMIC
+	help
+	  Say Y to include support
+
+config OPLUS_CHECK_CHARGERID_VOLT
+	tristate "OPLUS CHECK CHARGERID VOLT"
+	default n
+	depends on MFD_SPMI_PMIC
+	help
+	  Say Y to include support
+
+config OPLUS_SHIP_MODE_SUPPORT
+	tristate "OPLUS_SHIP_MODE_SUPPORT"
+	default n
+	depends on MFD_SPMI_PMIC
+	help
+	  Say Y to include support
+config OPLUS_SHORT_HW_CHECK
+	bool "OPLUS batt HW SHORT "
+	help
+	  Say Y to include support
+config OPLUS_SHORT_USERSPACE
+	bool "OPLUS batt userspace"
+	help
+	  Say Y to include support
+source "drivers/power/oppo/Kconfig"
+#endif

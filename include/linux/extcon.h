@@ -65,6 +65,12 @@
 #define EXTCON_JACK_SPDIF_IN	26	/* Sony Philips Digital InterFace */
 #define EXTCON_JACK_SPDIF_OUT	27
 
+#ifdef OPLUS_ARCH_EXTENDS
+#define EXTCON_JACK_SELFSTICK_BTN_PLUG_IN	30
+#define EXTCON_JACK_SELFSTICK_BTN_SHORT_PRESS	31
+#define EXTCON_JACK_SELFSTICK_BTN_LONG_PRESS	32
+#endif /* OPLUS_ARCH_EXTENDS */
+
 /* Display external connector */
 #define EXTCON_DISP_HDMI	40	/* High-Definition Multimedia Interface */
 #define EXTCON_DISP_MHL		41	/* Mobile High-Definition Link */

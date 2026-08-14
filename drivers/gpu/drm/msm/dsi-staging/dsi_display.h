@@ -27,6 +27,9 @@
 #include "dsi_ctrl.h"
 #include "dsi_phy.h"
 #include "dsi_panel.h"
+//#ifdef VENDOR_EDIT
+#include <linux/dsi_oppo_support.h>
+//#endif /*VENDOR_EDIT*/
 
 #define MAX_DSI_CTRLS_PER_DISPLAY             2
 #define DSI_CLIENT_NAME_SIZE		20
@@ -656,6 +659,15 @@ enum dsi_pixel_format dsi_display_get_dst_format(void *display);
  * Return: Zero on Success
  */
 int dsi_display_cont_splash_config(void *display);
+
+#ifdef VENDOR_EDIT
+struct dsi_display *get_main_display(void);
+
+int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display);
+int dsi_display_cmd_engine_enable(struct dsi_display *display);
+int dsi_display_cmd_engine_disable(struct dsi_display *display);
+#endif /*VENDOR_EDIT*/
+
 /*
  * dsi_display_get_panel_vfp - get panel vsync
  * @display: Pointer to private display structure

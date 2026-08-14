@@ -20,21 +20,33 @@
 #include "gc.h"
 #include <trace/events/f2fs.h>
 
+#ifdef CONFIG_F2FS_OPPO_GC
+#include "of2fs_gc.h"
+#endif
+
 static int gc_thread_func(void *data)
 {
 	struct f2fs_sb_info *sbi = data;
 	struct f2fs_gc_kthread *gc_th = sbi->gc_thread;
-	wait_queue_head_t *wq = &sbi->gc_thread->gc_wait_queue_head;
+#ifndef CONFIG_F2FS_OPPO_GC
+ 	wait_queue_head_t *wq = &sbi->gc_thread->gc_wait_queue_head;
+#endif
 	unsigned int wait_ms;
 
 	wait_ms = gc_th->min_sleep_time;
 
 	set_freezable();
 	do {
+#ifdef CONFIG_F2FS_OPPO_GC
+		if (of2fs_gc_thread_wait(sbi, &wait_ms)) {
+			continue;
+ 		}
+#else
 		wait_event_interruptible_timeout(*wq,
 				kthread_should_stop() || freezing(current) ||
 				gc_th->gc_wake,
 				msecs_to_jiffies(wait_ms));
+#endif
 
 		/* give it a try one time */
 		if (gc_th->gc_wake)
@@ -135,6 +147,9 @@ int f2fs_start_gc_thread(struct f2fs_sb_info *sbi)
 	gc_th->no_gc_sleep_time = DEF_GC_THREAD_NOGC_SLEEP_TIME;
 
 	gc_th->gc_wake= 0;
+#ifdef CONFIG_F2FS_OPPO_GC
+	init_waitqueue_head(&gc_th->fggc_wait_queue);
+#endif
 
 	sbi->gc_thread = gc_th;
 	init_waitqueue_head(&sbi->gc_thread->gc_wait_queue_head);
@@ -502,6 +517,9 @@ static int gc_node_segment(struct f2fs_sb_info *sbi,
 	int phase = 0;
 	bool fggc = (gc_type == FG_GC);
 	int submitted = 0;
+#ifdef CONFIG_F2FS_BD_STAT
+	int gc_count = 0;
+#endif
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -518,8 +536,17 @@ next_step:
 		int err;
 
 		/* stop BG_GC if there is not enough free sections. */
+#ifdef CONFIG_F2FS_BD_STAT
+		if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) {
+			bd_lock(sbi);
+			bd_inc_array_val(sbi, gc_node_blocks, gc_type, gc_count);
+			bd_unlock(sbi);
+			return submitted;
+		}
+#else
 		if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0))
 			return submitted;
+#endif
 
 		if (check_valid_map(sbi, segno, off) == 0)
 			continue;
@@ -559,6 +586,9 @@ next_step:
 		err = f2fs_move_node_page(node_page, gc_type);
 		if (!err && gc_type == FG_GC)
 			submitted++;
+#ifdef CONFIG_F2FS_BD_STAT
+		gc_count++;
+#endif
 		stat_inc_node_blk_count(sbi, 1, gc_type);
 	}
 
@@ -975,6 +1005,9 @@ static int gc_data_segment(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 	int off;
 	int phase = 0;
 	int submitted = 0;
+#ifdef CONFIG_F2FS_BD_STAT
+	int gc_count = 0;
+#endif
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -990,8 +1023,18 @@ next_step:
 		nid_t nid = le32_to_cpu(entry->nid);
 
 		/* stop BG_GC if there is not enough free sections. */
+#ifdef CONFIG_F2FS_BD_STAT
+		if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) {
+			bd_lock(sbi);
+			bd_inc_array_val(sbi, gc_data_blocks, gc_type, gc_count);
+			bd_inc_array_val(sbi, hotcold_count, HC_GC_COLD_DATA, gc_count);
+			bd_unlock(sbi);
+			return submitted;
+		}
+#else
 		if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0))
 			return submitted;
+#endif
 
 		if (check_valid_map(sbi, segno, off) == 0)
 			continue;
@@ -1098,6 +1141,9 @@ next_step:
 				up_write(&fi->i_gc_rwsem[READ]);
 			}
 
+#ifdef CONFIG_F2FS_BD_STAT
+			gc_count++;
+#endif
 			stat_inc_data_blk_count(sbi, 1, gc_type);
 		}
 	}
@@ -1105,6 +1151,12 @@ next_step:
 	if (++phase < 5)
 		goto next_step;
 
+#ifdef CONFIG_F2FS_BG_STAT
+	bd_lock(sbi);
+	bd_inc_array_val(sbi, gc_data_blocks, gc_type, gc_count);
+	bd_inc_array_val(sbi, hotcold_count, HC_GC_COLD_DATA, gc_count);
+	bd_unlock(sbi);
+#endif
 	return submitted;
 }
 
@@ -1134,6 +1186,9 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int submitted = 0;
+#ifdef CONFIG_F2FS_BD_STAT
+	int hotcold_type = get_seg_entry(sbi, segno)->type;
+#endif
 
 	if (__is_large_section(sbi))
 		end_segno = rounddown(end_segno, sbi->segs_per_sec);
@@ -1207,6 +1262,19 @@ freed:
 		if (gc_type == FG_GC &&
 				get_valid_blocks(sbi, segno, false) == 0)
 			seg_freed++;
+#ifdef CONFIG_F2FS_BD_STAT
+		bd_lock(sbi);
+		if (gc_type == BG_GC || get_valid_blocks(sbi, segno, 1) == 0) {
+			if (type == SUM_TYPE_NODE)
+				bd_inc_array_val(sbi, gc_node_segments, gc_type, 1);
+			else
+				bd_inc_array_val(sbi, gc_data_segments, gc_type, 1);
+			bd_inc_array_val(sbi, hotcold_gc_segments, hotcold_type + 1, 1);
+		}
+		bd_inc_array_val(sbi, hotcold_gc_blocks, hotcold_type + 1,
+					(unsigned long)get_valid_blocks(sbi, segno, 1));
+		bd_unlock(sbi);
+#endif
 		migrated++;
 
 		if (__is_large_section(sbi) && segno + 1 < end_segno)
@@ -1241,6 +1309,11 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 	unsigned long long last_skipped = sbi->skipped_atomic_files[FG_GC];
 	unsigned long long first_skipped;
 	unsigned int skipped_round = 0, round = 0;
+#ifdef CONFIG_F2FS_BD_STAT
+	bool gc_completed = false;
+	u64 fggc_begin, fggc_end;
+	fggc_begin = gc_type == FG_GC ? local_clock() : 0;
+#endif
 
 	trace_f2fs_gc_begin(sbi->sb, sync, background,
 				get_pages(sbi, F2FS_DIRTY_NODES),
@@ -1295,6 +1368,9 @@ gc_more:
 		sec_freed++;
 	total_freed += seg_freed;
 
+#ifdef CONFIG_F2FS_BD_STAT
+	gc_completed = true;
+#endif
 	if (gc_type == FG_GC) {
 		if (sbi->skipped_atomic_files[FG_GC] > last_skipped ||
 						sbi->skipped_gc_rwsem)
@@ -1340,6 +1416,18 @@ stop:
 				prefree_segments(sbi));
 
 	mutex_unlock(&sbi->gc_mutex);
+#ifdef CONFIG_F2FS_BD_STAT
+	if (gc_completed) {
+		fggc_end = gc_type == FG_GC ? local_clock() : 0;
+		bd_lock(sbi);
+		if (fggc_end)
+			bd_inc_val(sbi, fggc_time, fggc_end - fggc_begin);
+		bd_inc_array_val(sbi, gc_count, gc_type, 1);
+		if (ret)
+			bd_inc_array_val(sbi, gc_fail_count, gc_type, 1);
+		bd_unlock(sbi);
+	}
+#endif
 
 	put_gc_inode(&gc_list);
 
@@ -1353,6 +1441,10 @@ void f2fs_build_gc_manager(struct f2fs_sb_info *sbi)
 	DIRTY_I(sbi)->v_ops = &default_v_ops;
 
 	sbi->gc_pin_file_threshold = DEF_GC_FAILED_PINNED_FILES;
+
+#ifdef CONFIG_F2FS_OPPO_GC
+	atomic_set(&sbi->need_ssr_gc, 0);
+#endif
 
 	/* give warm/cold data area from slower device */
 	if (f2fs_is_multi_device(sbi) && !__is_large_section(sbi))

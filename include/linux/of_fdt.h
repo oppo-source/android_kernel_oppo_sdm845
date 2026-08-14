@@ -50,6 +50,11 @@ extern void *initial_boot_params;
 extern char __dtb_start[];
 extern char __dtb_end[];
 
+#ifdef CONFIG_OPPO_COMMON_SOFT
+/* Other Prototypes */
+extern int of_fdt_get_ddrtype(void);
+#endif /* CONFIG_OPPO_COMMON_SOFT */
+
 /* For scanning the flat device-tree at boot time */
 extern int of_scan_flat_dt(int (*it)(unsigned long node, const char *uname,
 				     int depth, void *data),

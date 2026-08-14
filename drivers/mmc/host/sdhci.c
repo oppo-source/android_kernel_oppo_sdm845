@@ -47,6 +47,10 @@
 #define SDHCI_DBG_DUMP_RS_INTERVAL (10 * HZ)
 #define SDHCI_DBG_DUMP_RS_BURST 2
 
+#ifdef OPLUS_FEATURE_EMMC_SDCARD_OPTIMIZE
+#define MMC_CARD_REMOVED (1<<4)
+#endif
+
 static unsigned int debug_quirks = 0;
 static unsigned int debug_quirks2;
 
@@ -78,8 +82,21 @@ static void sdhci_dump_state(struct sdhci_host *host)
 		mmc->parent->power.disable_depth);
 }
 
+#ifdef VENDOR_EDIT 
+#ifndef CONFIG_OPPO_DAILY_BUILD
+static int flag = 0;
+#endif
+#endif
 static void sdhci_dumpregs(struct sdhci_host *host)
 {
+#ifdef VENDOR_EDIT 
+#ifndef CONFIG_OPPO_DAILY_BUILD
+	if(!flag)
+		flag++;
+	else
+		return;
+#endif
+#endif
 	MMC_TRACE(host->mmc,
 		"%s: 0x04=0x%08x 0x06=0x%08x 0x0E=0x%08x 0x30=0x%08x 0x34=0x%08x 0x38=0x%08x\n",
 		__func__,
@@ -1222,6 +1239,17 @@ void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 
 	WARN_ON(host->cmd);
 
+#ifdef VENDOR_EDIT
+	if(host->mmc->card_stuck_in_programing_status && ((cmd->opcode == MMC_WRITE_MULTIPLE_BLOCK) || (cmd->opcode == MMC_WRITE_BLOCK)))
+	{
+		pr_info("blocked write cmd:%s\n", mmc_hostname(host->mmc));
+
+		cmd->error = -EIO;
+		sdhci_finish_mrq(host, cmd->mrq);
+		return;
+	}
+#endif /* VENDOR_EDIT */
+
 	/* Initially, a command has no error */
 	cmd->error = 0;
 
@@ -1250,6 +1278,10 @@ void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 			__func__);
 			sdhci_dumpregs(host);
 			cmd->error = -EIO;
+#ifdef OPLUS_FEATURE_EMMC_SDCARD_OPTIMIZE
+			if (host->mmc->card && mmc_card_sd(host->mmc->card))
+				host->mmc->card->state |= MMC_CARD_REMOVED;
+#endif
 			sdhci_finish_mrq(host, cmd->mrq);
 			return;
 		}
@@ -1735,6 +1767,19 @@ static bool sdhci_check_state(struct sdhci_host *host)
 	else
 		return false;
 }
+
+#ifdef VENDOR_EDIT
+bool sdhci_check_pwr(struct mmc_host *mmc)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	if (!host->pwr) {
+		pr_err("sdhci pwr is 0! clk is %d\n", host->clock);
+		return true;
+	} else
+		return false;
+}
+EXPORT_SYMBOL(sdhci_check_pwr);
+#endif
 
 static bool sdhci_check_auto_tuning(struct sdhci_host *host,
 				  struct mmc_command *cmd)
@@ -3117,6 +3162,15 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 		 * above in sdhci_cmd_irq().
 		 */
 		if (data_cmd && (data_cmd->flags & MMC_RSP_BUSY)) {
+#ifdef OPLUS_FEATURE_EMMC_SDCARD_OPTIMIZE
+			if (intmask & SDHCI_INT_DATA_TIMEOUT) {
+				host->data_cmd = NULL;
+				data_cmd->error = -ETIMEDOUT;
+				host->mmc->err_stats[MMC_ERR_CMD_TIMEOUT]++;
+				sdhci_finish_mrq(host, data_cmd->mrq);
+				return;
+			}
+#endif		
 			if (intmask & SDHCI_INT_DATA_END) {
 				host->data_cmd = NULL;
 				/*

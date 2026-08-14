@@ -26,8 +26,18 @@
 #include <linux/dmapool.h>
 #include <linux/dma-mapping.h>
 
+#ifdef VENDOR_EDIT
+#include <linux/moduleparam.h>
+#endif /* VENDOR_EDIT */
+
 #include "xhci.h"
 #include "xhci-trace.h"
+
+#ifdef VENDOR_EDIT
+static bool usb2_lpm_disable = true;
+module_param(usb2_lpm_disable, bool, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(usb2_lpm_disable, "DISABLE USB2 LPM");
+#endif /* VENDOR_EDIT */
 
 /*
  * Allocates a generic ring segment from the ring pool, sets the dma address,
@@ -2333,11 +2343,20 @@ static void xhci_add_in_port(struct xhci_hcd *xhci, unsigned int num_ports,
 		xhci_dbg_trace(xhci, trace_xhci_dbg_init,
 				"xHCI 1.0: support USB2 software lpm");
 		xhci->sw_lpm_support = 1;
+#ifdef VENDOR_EDIT
+		if (!usb2_lpm_disable && (temp & XHCI_HLC)) {
+			xhci_dbg_trace(xhci, trace_xhci_dbg_init,
+					"xHCI 1.0: support USB2 hardware lpm");
+			xhci_err(xhci, "xHCI 1.0: support USB2 hardware lpm");
+			xhci->hw_lpm_support = 1;
+		}
+#else
 		if (temp & XHCI_HLC) {
 			xhci_dbg_trace(xhci, trace_xhci_dbg_init,
 					"xHCI 1.0: support USB2 hardware lpm");
 			xhci->hw_lpm_support = 1;
 		}
+#endif /* VENDOR_EDIT */
 	}
 
 	port_offset--;

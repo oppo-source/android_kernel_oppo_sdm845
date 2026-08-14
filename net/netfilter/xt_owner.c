@@ -17,7 +17,12 @@
 #include <net/inet_sock.h>
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/xt_owner.h>
-
+//#ifdef VENDOR_EDIT
+//add for BUG 2212301
+#include <linux/netfilter/xt_socket.h>
+#define XT_SOCKET_SUPPORTED_HOOKS \
+    ((1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_LOCAL_IN))
+//#endif  /*VENDOR_EDIT*/
 static int owner_check(const struct xt_mtchk_param *par)
 {
 	struct xt_owner_match_info *info = par->matchinfo;
@@ -56,7 +61,42 @@ static int owner_check(const struct xt_mtchk_param *par)
 
 	return 0;
 }
+//#ifdef VENDOR_EDIT
+//add for BUG 2212301
+static struct sock *oem_qtaguid_find_sk(const struct sk_buff *skb,
+                    struct xt_action_param *par)
+    {
+        struct sock *sk;
+        unsigned int hook_mask = (1 << par->hooknum);
 
+        pr_debug("qtaguid[%d]: find_sk(skb=%pK) family=%d\n",
+            par->hooknum, skb, par->family);
+
+        /*
+        * Let's not abuse the the xt_socket_get*_sk(), or else it will
+        * return garbage SKs.
+        */
+        if (!(hook_mask & XT_SOCKET_SUPPORTED_HOOKS))
+            return NULL;
+
+    switch (par->family) {
+        case NFPROTO_IPV6:
+            sk = xt_socket_lookup_slow_v6(dev_net(skb->dev), skb, par->in);
+            break;
+        case NFPROTO_IPV4:
+            sk = xt_socket_lookup_slow_v4(dev_net(skb->dev), skb, par->in);
+            break;
+        default:
+            return NULL;
+        }
+
+        if (sk) {
+            pr_debug("qtaguid[%d]: %pK->sk_proto=%u->sk_state=%d\n",
+                par->hooknum, sk, sk->sk_protocol, sk->sk_state);
+        }
+        return sk;
+    }
+//#endif  /*VENDOR_EDIT*/
 static bool
 owner_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
@@ -64,7 +104,52 @@ owner_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	const struct file *filp;
 	struct sock *sk = skb_to_full_sk(skb);
 	struct net *net = par->net;
-
+//#ifdef VENDOR_EDIT
+//add for BUG 2212301
+    /*
+    * When in TCP_TIME_WAIT the sk is not a "struct sock" but
+    * "struct inet_timewait_sock" which is missing fields
+    * So we ignore it
+    */
+    if (sk && sk->sk_state == TCP_TIME_WAIT){
+        pr_debug("owner_mt 1 : sk: %p, sk->sk_state: %d \n", sk, sk->sk_state);
+        sk = NULL;
+    }
+    if (sk == NULL) {
+        /*
+         * A missing sk->sk_socket happens when packets are in-flight
+         * and the matching socket is already closed and gone.
+         */
+         sk = oem_qtaguid_find_sk(skb, par);
+        /*
+         * TCP_NEW_SYN_RECV are not "struct sock" but "struct request_sock"
+         * where we can get a pointer to a full socket to retrieve uid/gid.
+         * When in TCP_TIME_WAIT, sk is a struct inet_timewait_sock
+         * which is missing fields and does not contain any reference
+         * to a full socket, so just ignore the socket
+         */
+         if (sk && sk->sk_state == TCP_NEW_SYN_RECV) {
+            pr_debug("owner_mt 2 : sk: %p, sk->sk_state: %d \n", sk, sk->sk_state);
+            sock_gen_put(sk);
+            sk = sk_to_full_sk(sk);
+         } else if (sk && (!sk_fullsock(sk) || sk->sk_state == TCP_TIME_WAIT)) {
+            pr_debug("owner_mt 3 : sk: %p, sk->sk_state: %d \n", sk, sk->sk_state);
+            sock_gen_put(sk);
+            sk = NULL;
+         }
+#ifdef VENDOR_EDIT
+         else if (sk && sk->sk_state == TCP_CLOSE) {
+            sock_gen_put(sk);
+         } else if (sk) {
+            pr_debug("owner_mt: sk: %px, sk->sk_state: %d \n", sk, sk->sk_state);
+            sock_gen_put(sk);
+         }
+#endif
+    }
+    if(sk) {
+        pr_debug("owner_mt: sk: %p, sk->sk_state: %d, sk->sk_socket: %p\n", sk, sk->sk_state, sk->sk_socket);
+    }
+//#endif  /*VENDOR_EDIT*/
 	if (sk == NULL || sk->sk_socket == NULL)
 		return (info->match ^ info->invert) == 0;
 	else if (info->match & info->invert & XT_OWNER_SOCKET)
@@ -107,8 +192,14 @@ static struct xt_match owner_mt_reg __read_mostly = {
 	.checkentry = owner_check,
 	.match      = owner_mt,
 	.matchsize  = sizeof(struct xt_owner_match_info),
+#ifndef VENDOR_EDIT
 	.hooks      = (1 << NF_INET_LOCAL_OUT) |
 	              (1 << NF_INET_POST_ROUTING),
+#else
+	.hooks      = (1 << NF_INET_LOCAL_OUT) |
+	              (1 << NF_INET_POST_ROUTING) |
+	              (1 << NF_INET_LOCAL_IN),
+#endif
 	.me         = THIS_MODULE,
 };
 

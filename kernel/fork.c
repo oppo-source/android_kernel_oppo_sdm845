@@ -92,6 +92,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
+#ifdef OPLUS_FEATURE_UIFIRST
+#include <linux/uifirst/uifirst_sched_fork.h>
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 /*
  * Minimum number of threads to boot the kernel
@@ -103,6 +106,9 @@
  */
 #define MAX_THREADS FUTEX_TID_MASK
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_ION) && defined(CONFIG_DUMP_TASKS_MEM)
+extern void update_user_tasklist(struct task_struct *tsk);
+#endif
 /*
  * Protected counters by write_lock_irq(&tasklist_lock)
  */
@@ -772,6 +778,11 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+	mm->va_feature = 0;
+	mm->va_feature_rnd = 0;
+	mm->zygoteheap_in_MB = 0;
+#endif
 #ifdef CONFIG_SPECULATIVE_PAGE_FAULT
 	rwlock_init(&mm->mm_rb_lock);
 #endif
@@ -1192,6 +1203,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	tsk->nvcsw = tsk->nivcsw = 0;
 #ifdef CONFIG_DETECT_HUNG_TASK
 	tsk->last_switch_count = tsk->nvcsw + tsk->nivcsw;
+	tsk->last_switch_time = 0;
 #endif
 
 	tsk->mm = NULL;
@@ -1788,6 +1800,14 @@ static __latent_entropy struct task_struct *copy_process(
 	p->sequential_io_avg	= 0;
 #endif
 
+#ifdef CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT
+	p->fpack = NULL;
+#endif /* CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT */
+
+#ifdef OPLUS_FEATURE_UIFIRST
+	init_task_ux_info(p);
+#endif /* OPLUS_FEATURE_UIFIRST */
+
 	/* Perform scheduler related setup. Assign this task to a CPU. */
 	retval = sched_fork(clone_flags, p);
 	if (retval)
@@ -1984,6 +2004,10 @@ static __latent_entropy struct task_struct *copy_process(
 			p->signal->tty = tty_kref_get(current->signal->tty);
 			list_add_tail(&p->sibling, &p->real_parent->children);
 			list_add_tail_rcu(&p->tasks, &init_task.tasks);
+#if defined(VENDOR_EDIT) && defined(CONFIG_ION) && defined(CONFIG_DUMP_TASKS_MEM)
+			INIT_LIST_HEAD(&p->user_tasks);
+			update_user_tasklist(p);
+#endif
 			attach_pid(p, PIDTYPE_PGID);
 			attach_pid(p, PIDTYPE_SID);
 			__this_cpu_inc(process_counts);
@@ -2145,6 +2169,10 @@ long _do_fork(unsigned long clone_flags,
 
 		pid = get_task_pid(p, PIDTYPE_PID);
 		nr = pid_vnr(pid);
+
+#if defined(VENDOR_EDIT) && defined(CONFIG_ION) && defined(CONFIG_DUMP_TASKS_MEM)
+		atomic64_set(&p->ions, 0);
+#endif
 
 		if (clone_flags & CLONE_PARENT_SETTID)
 			put_user(nr, parent_tidptr);
